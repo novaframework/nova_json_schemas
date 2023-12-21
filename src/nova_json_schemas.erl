@@ -20,10 +20,13 @@ pre_request(Req = #{extra_state := #{json_schema := SchemaLocation}, json := JSO
     %% JSON have already been parsed so we can just continue with the validation
     case validate_json(SchemaLocation, JSON) of
 	ok ->
+	    logger:debug("Schema validation on JSON body successful"),
 	    {ok, Req};
 	{error, Errors} ->
+	    logger:debug("Got validation-errors on JSON body. Errors: ~p", [Errors]),
 	    case maps:get(render_errors, Options, false) of
 		true ->
+		    logger:debug("Rendering validation-errors and send back to requester"),
 		    JsonLib = nova:get_env(json_lib, thoas),
 		    Req0 = cowboy_req:set_resp_headers(#{<<"content-type">> => <<"application/json">>}, Req),
 		    ErrorStruct = render_error(Errors),
@@ -32,6 +35,7 @@ pre_request(Req = #{extra_state := #{json_schema := SchemaLocation}, json := JSO
 		    Req2 = cowboy_req:reply(400, Req1),
 		    {stop, Req2};
 		_ ->
+		    logger:debug("render_errors-option not set for plugin nova_json_schemas - returning plain 400-status to requester"),
 		    Req0 = cowboy_req:reply(400, Req),
 		    {stop, Req0}
 	    end
@@ -42,6 +46,7 @@ pre_request(Req = #{extra_state := #{json_schema := SchemaLocation}}, _Options) 
     {error, body_not_parsed};
 pre_request(Req, _Options) ->
     %% 'json_schema' is not set or 'extra_state' is completly missing. Just continue.
+    logger:debug("No schema is set for this route so will continue executing"),
     {ok, Req}.
 
 %%--------------------------------------------------------------------
@@ -78,7 +83,7 @@ validate_json(SchemaLocation, Json) ->
     case jesse:validate(SchemaLocation, Json) of
 	{error, {database_error, _, schema_not_found}} ->
 	    %% Load the schema
-	    MainApp = nova:get_main_app(),
+	    {ok, MainApp} = nova:get_main_app(),
 	    PrivDir = code:lib_dir(MainApp, priv),
 	    SchemaLocation0 = filename:join([PrivDir, SchemaLocation]),
 	    {ok, Filecontent} = file:read_file(SchemaLocation0),
