@@ -70,7 +70,7 @@ plugin_info() ->
      <<"Niclas Axelsson <niclas@burbas.se">>,
      <<"Validating JSON with schemas">>,
      [
-      {render_errors, <<"If this is set, validation-errors is returned to the requester">>},
+      {render_errors, <<"If this is set, validation-errors is returned to the requester">>}
      ]}. %% Options is specified as {Key, Description}
 
 
@@ -82,6 +82,8 @@ validate_json(SchemaLocation, Json) ->
 	    PrivDir = code:lib_dir(MainApp, priv),
 	    SchemaLocation0 = filename:join([PrivDir, SchemaLocation]),
 	    {ok, Filecontent} = file:read_file(SchemaLocation0),
+	    JsonLib = nova:get_env(json_lib, thoas),
+	    {ok, Schema} = erlang:apply(JsonLib, decode, [Filecontent]),
 	    jesse:add_schema(SchemaLocation, Schema),
 	    validate_json(SchemaLocation, Json);
 	{error, ValidationError} ->
