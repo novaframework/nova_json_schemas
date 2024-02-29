@@ -40,7 +40,7 @@ pre_request(Req = #{extra_state := #{json_schema := SchemaLocation}, json := JSO
 		    {stop, Req0}
 	    end
     end;
-pre_request(Req = #{extra_state := #{json_schema := SchemaLocation}}, _Options) ->
+pre_request(#{extra_state := #{json_schema := _SchemaLocation}}, _Options) ->
     %% The body have not been parsed. Log and error and stop
     logger:error("JSON Schema is set in 'extra_state' but body have not yet been parsed - rearrange your plugins so that JSON plugin is ran before this.."),
     {error, body_not_parsed};
