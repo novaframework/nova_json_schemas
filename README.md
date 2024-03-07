@@ -21,7 +21,7 @@ routes(_Environment) ->
       #{prefix => "",
         security => false,
 	plugins => [
-		   {pre_request, nova_json_schemas, #{render_errrors => true}},
+		   {pre_request, nova_json_schemas, #{render_errors => true}},
                    {pre_request, nova_request_plugin, #{decode_json_body => true}}
 		   ],
 	routes => [
