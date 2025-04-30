@@ -101,7 +101,8 @@ validate_json(SchemaLocation, Json) ->
 render_error([]) -> [];
 render_error([{data_invalid, FieldInfo, Type, ActualValue, Field}|Tl]) ->
     %% We don't do any fancy with this currently.
-    [#{field_info => FieldInfo,
+    [#{error_context => schema_violation,
+       field_info => FieldInfo,
        error_type => Type,
        actual_value => ActualValue,
        expected_value => Field}|render_error(Tl)].
