@@ -1,6 +1,8 @@
 -module(nova_json_schemas).
 -behaviour(nova_plugin).
 
+-on_load(initialize/0).
+
 -export([
          pre_request/2,
          post_request/2,
@@ -105,3 +107,8 @@ render_error([{data_invalid, FieldInfo, Type, ActualValue, Field}|Tl]) ->
        error_type => Type,
        actual_value => ActualValue,
        expected_value => Field}|render_error(Tl)].
+
+initialize() ->
+    logger:debug("Jesse database has been initialized."),
+    jesse_database:load_all(),
+    ok.
