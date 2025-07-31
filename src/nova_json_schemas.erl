@@ -2,11 +2,13 @@
 -behaviour(nova_plugin).
 
 -export([
-        load_local_schemas/0,
-         pre_request/2,
-         post_request/2,
-         plugin_info/0
-        ]).
+    load_local_schemas/0,
+    pre_request/2,
+    post_request/2,
+    plugin_info/0
+]).
+
+-include_lib("kernel/include/logger.hrl").
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -23,7 +25,7 @@ load_local_schemas() ->
         true ->
             load_schemas_from_dir(SchemasDir, "schemas");
         false ->
-            logger:warning("Schemas directory not found: ~s", [SchemasDir])
+            ?LOG_WARNING("Schemas directory not found: ~s", [SchemasDir])
     end,
     ok.
 
@@ -33,40 +35,44 @@ load_local_schemas() ->
 %% @end
 %%--------------------------------------------------------------------
 -spec pre_request(Req :: cowboy_req:req(), Options :: map()) ->
-                         {ok, Req0 :: cowboy_req:req()} |
-                         {stop, Req0 :: cowboy_req:req()} |
-                         {error, Reason :: term()}.
+    {ok, Req0 :: cowboy_req:req()}
+    | {stop, Req0 :: cowboy_req:req()}
+    | {error, Reason :: term()}.
 pre_request(Req = #{extra_state := #{json_schema := SchemaLocation}, json := JSON}, Options) ->
     %% JSON have already been parsed so we can just continue with the validation
     case validate_json(SchemaLocation, JSON) of
-	ok ->
-	    logger:debug("Schema validation on JSON body successful"),
-	    {ok, Req};
-	{error, Errors} ->
-	    logger:debug("Got validation-errors on JSON body. Errors: ~p", [Errors]),
-	    case maps:get(render_errors, Options, false) of
-		true ->
-		    logger:debug("Rendering validation-errors and send back to requester"),
-		    JsonLib = nova:get_env(json_lib, thoas),
-		    Req0 = cowboy_req:set_resp_headers(#{<<"content-type">> => <<"application/json">>}, Req),
-		    ErrorStruct = render_error(Errors),
-		    ErrorJson = erlang:apply(JsonLib, encode, [ErrorStruct]),
-		    Req1 = cowboy_req:set_resp_body(ErrorJson, Req0),
-		    Req2 = cowboy_req:reply(400, Req1),
-		    {stop, Req2};
-		_ ->
-		    logger:debug("render_errors-option not set for plugin nova_json_schemas - returning plain 400-status to requester"),
-		    Req0 = cowboy_req:reply(400, Req),
-		    {stop, Req0}
-	    end
+        ok ->
+            ?LOG_DEBUG("Schema validation on JSON body successful"),
+            {ok, Req};
+        {error, Errors} ->
+            ?LOG_DEBUG("Got validation-errors on JSON body. Errors: ~p", [Errors]),
+            case maps:get(render_errors, Options, false) of
+                true ->
+                    ?LOG_DEBUG("Rendering validation-errors and send back to requester"),
+                    JsonLib = nova:get_env(json_lib, thoas),
+                    Req0 = cowboy_req:set_resp_headers(
+                        #{<<"content-type">> => <<"application/json">>}, Req
+                    ),
+                    ErrorStruct = render_error(Errors),
+                    ErrorJson = erlang:apply(JsonLib, encode, [ErrorStruct]),
+                    Req1 = cowboy_req:set_resp_body(ErrorJson, Req0),
+                    Req2 = cowboy_req:reply(400, Req1),
+                    {stop, Req2};
+                _ ->
+                    ?LOG_DEBUG("render_errors-option not set for plugin nova_json_schemas - returning plain 400-status to requester"),
+                    Req0 = cowboy_req:reply(400, Req),
+                    {stop, Req0}
+            end
     end;
 pre_request(#{extra_state := #{json_schema := _SchemaLocation}}, _Options) ->
     %% The body have not been parsed. Log and error and stop
-    logger:error("JSON Schema is set in 'extra_state' but body have not yet been parsed - rearrange your plugins so that JSON plugin is ran before this.."),
+    ?LOG_ERROR(
+        "JSON Schema is set in 'extra_state' but body have not yet been parsed - rearrange your plugins so that JSON plugin is ran before this.."
+    ),
     {error, body_not_parsed};
 pre_request(Req, _Options) ->
     %% 'json_schema' is not set or 'extra_state' is completly missing. Just continue.
-    logger:debug("No schema is set for this route so will continue executing"),
+    ?LOG_DEBUG("No schema is set for this route so will continue executing"),
     {ok, Req}.
 
 %%--------------------------------------------------------------------
@@ -75,81 +81,85 @@ pre_request(Req, _Options) ->
 %% @end
 %%--------------------------------------------------------------------
 -spec post_request(Req :: cowboy_req:req(), Options :: map()) ->
-                          {ok, Req0 :: cowboy_req:req()} |
-                          {stop, Req0 :: cowboy_req:req()} |
-                          {error, Reason :: term()}.
+    {ok, Req0 :: cowboy_req:req()}
+    | {stop, Req0 :: cowboy_req:req()}
+    | {error, Reason :: term()}.
 post_request(Req, _Options) ->
     {ok, Req}.
-
 
 %%--------------------------------------------------------------------
 %% @doc
 %% nova_plugin callback. Returns information about the plugin.
 %% @end
 %%--------------------------------------------------------------------
--spec plugin_info() -> {Title :: binary(), Version :: binary(), Author :: binary(), Description :: binary(),
-                       [{Key :: atom(), OptionDescription :: atom()}]}.
+-spec plugin_info() ->
+    {Title :: binary(), Version :: binary(), Author :: binary(), Description :: binary(), [
+        {Key :: atom(), OptionDescription :: atom()}
+    ]}.
 plugin_info() ->
-    {<<"JSON schema plugin">>,
-     <<"0.0.1">>,
-     <<"Niclas Axelsson <niclas@burbas.se">>,
-     <<"Validating JSON with schemas">>,
-     [
-      {render_errors, <<"If this is set, validation-errors is returned to the requester">>}
-     ]}. %% Options is specified as {Key, Description}
-
+    {<<"JSON schema plugin">>, <<"0.0.1">>, <<"Niclas Axelsson <niclas@burbas.se">>,
+        <<"Validating JSON with schemas">>, [
+            {render_errors, <<"If this is set, validation-errors is returned to the requester">>}
+            %% Options is specified as {Key, Description}
+        ]}.
 
 validate_json(SchemaLocation, Json) ->
     case jesse:validate(SchemaLocation, Json) of
-	{error, {database_error, _, schema_not_found}} ->
-	    %% Load the schema
-	    {ok, MainApp} = nova:get_main_app(),
-        PrivDir = code:priv_dir(MainApp),
-	    SchemaLocation0 = filename:join([PrivDir, SchemaLocation]),
-	    {ok, Filecontent} = file:read_file(SchemaLocation0),
-	    JsonLib = nova:get_env(json_lib, thoas),
-	    {ok, Schema} = erlang:apply(JsonLib, decode, [Filecontent]),
-	    jesse:add_schema(SchemaLocation, Schema),
-	    validate_json(SchemaLocation, Json);
-	{error, ValidationError} ->
-	    {error, ValidationError};
-	{ok, _} ->
-	    ok
+        {error, {database_error, _, schema_not_found}} ->
+            %% Load the schema
+            {ok, MainApp} = nova:get_main_app(),
+            PrivDir = code:priv_dir(MainApp),
+            SchemaLocation0 = filename:join([PrivDir, SchemaLocation]),
+            {ok, Filecontent} = file:read_file(SchemaLocation0),
+            JsonLib = nova:get_env(json_lib, thoas),
+            {ok, Schema} = erlang:apply(JsonLib, decode, [Filecontent]),
+            jesse:add_schema(SchemaLocation, Schema),
+            validate_json(SchemaLocation, Json);
+        {error, ValidationError} ->
+            {error, ValidationError};
+        {ok, _} ->
+            ok
     end.
 
-
-render_error([]) -> [];
-render_error([{data_invalid, FieldInfo, Type, ActualValue, Field}|Tl]) ->
+render_error([]) ->
+    [];
+render_error([{data_invalid, FieldInfo, Type, ActualValue, Field} | Tl]) ->
     %% We don't do any fancy with this currently.
-    [#{error_context => schema_violation,
-       field_info => FieldInfo,
-       error_type => Type,
-       actual_value => ActualValue,
-       expected_value => Field}|render_error(Tl)].
-
+    [
+        #{
+            error_context => schema_violation,
+            field_info => FieldInfo,
+            error_type => Type,
+            actual_value => ActualValue,
+            expected_value => Field
+        }
+        | render_error(Tl)
+    ].
 
 load_schemas_from_dir(Dir, RelativePrefix) ->
     case file:list_dir(Dir) of
         {ok, Files} ->
-            lists:foreach(fun(File) ->
-                FilePath = filename:join([Dir, File]),
-                RelativePath = filename:join([RelativePrefix, File]),
-                case filelib:is_dir(FilePath) of
-                    true ->
-                        load_schemas_from_dir(FilePath, RelativePath);
-                    false ->
-                        case filename:extension(File) of
-                            ".json" ->
-                                load_schema_file(FilePath, RelativePath);
-                            _ ->
-                                ok
-                        end
-                end
-            end, Files);
+            lists:foreach(
+                fun(File) ->
+                    FilePath = filename:join([Dir, File]),
+                    RelativePath = filename:join([RelativePrefix, File]),
+                    case filelib:is_dir(FilePath) of
+                        true ->
+                            load_schemas_from_dir(FilePath, RelativePath);
+                        false ->
+                            case filename:extension(File) of
+                                ".json" ->
+                                    load_schema_file(FilePath, RelativePath);
+                                _ ->
+                                    ok
+                            end
+                    end
+                end,
+                Files
+            );
         {error, Reason} ->
-            logger:error("Failed to list directory ~s: ~p", [Dir, Reason])
+            ?LOG_ERROR("Failed to list directory ~s: ~p", [Dir, Reason])
     end.
-
 
 load_schema_file(FilePath, RelativePath) ->
     case file:read_file(FilePath) of
@@ -158,10 +168,10 @@ load_schema_file(FilePath, RelativePath) ->
             case erlang:apply(JsonLib, decode, [FileContent]) of
                 {ok, Schema} ->
                     jesse:add_schema(RelativePath, Schema),
-                    logger:debug("Loaded JSON schema: ~s", [RelativePath]);
+                    ?LOG_DEBUG("Loaded JSON schema: ~s", [RelativePath]);
                 {error, Reason} ->
-                    logger:error("Failed to decode JSON schema ~s: ~p", [FilePath, Reason])
+                    ?LOG_ERROR("Failed to decode JSON schema ~s: ~p", [FilePath, Reason])
             end;
         {error, Reason} ->
-            logger:error("Failed to read schema file ~s: ~p", [FilePath, Reason])
+            ?LOG_ERROR("Failed to read schema file ~s: ~p", [FilePath, Reason])
     end.
