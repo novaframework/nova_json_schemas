@@ -2,10 +2,30 @@
 -behaviour(nova_plugin).
 
 -export([
+        load_local_schemas/0,
          pre_request/2,
          post_request/2,
          plugin_info/0
         ]).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Load all local JSON schemas from the main application's
+%% priv/schemas directory
+%% @end
+%%--------------------------------------------------------------------
+-spec load_local_schemas() -> ok.
+load_local_schemas() ->
+    {ok, MainApp} = nova:get_main_app(),
+    PrivDir = code:priv_dir(MainApp),
+    SchemasDir = filename:join([PrivDir, "schemas"]),
+    case filelib:is_dir(SchemasDir) of
+        true ->
+            load_schemas_from_dir(SchemasDir, "schemas");
+        false ->
+            logger:warning("Schemas directory not found: ~s", [SchemasDir])
+    end,
+    ok.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -84,7 +104,7 @@ validate_json(SchemaLocation, Json) ->
 	{error, {database_error, _, schema_not_found}} ->
 	    %% Load the schema
 	    {ok, MainApp} = nova:get_main_app(),
-	    PrivDir = code:lib_dir(MainApp, priv),
+        PrivDir = code:priv_dir(MainApp),
 	    SchemaLocation0 = filename:join([PrivDir, SchemaLocation]),
 	    {ok, Filecontent} = file:read_file(SchemaLocation0),
 	    JsonLib = nova:get_env(json_lib, thoas),
@@ -106,3 +126,42 @@ render_error([{data_invalid, FieldInfo, Type, ActualValue, Field}|Tl]) ->
        error_type => Type,
        actual_value => ActualValue,
        expected_value => Field}|render_error(Tl)].
+
+
+load_schemas_from_dir(Dir, RelativePrefix) ->
+    case file:list_dir(Dir) of
+        {ok, Files} ->
+            lists:foreach(fun(File) ->
+                FilePath = filename:join([Dir, File]),
+                RelativePath = filename:join([RelativePrefix, File]),
+                case filelib:is_dir(FilePath) of
+                    true ->
+                        load_schemas_from_dir(FilePath, RelativePath);
+                    false ->
+                        case filename:extension(File) of
+                            ".json" ->
+                                load_schema_file(FilePath, RelativePath);
+                            _ ->
+                                ok
+                        end
+                end
+            end, Files);
+        {error, Reason} ->
+            logger:error("Failed to list directory ~s: ~p", [Dir, Reason])
+    end.
+
+
+load_schema_file(FilePath, RelativePath) ->
+    case file:read_file(FilePath) of
+        {ok, FileContent} ->
+            JsonLib = nova:get_env(json_lib, thoas),
+            case erlang:apply(JsonLib, decode, [FileContent]) of
+                {ok, Schema} ->
+                    jesse:add_schema(RelativePath, Schema),
+                    logger:debug("Loaded JSON schema: ~s", [RelativePath]);
+                {error, Reason} ->
+                    logger:error("Failed to decode JSON schema ~s: ~p", [FilePath, Reason])
+            end;
+        {error, Reason} ->
+            logger:error("Failed to read schema file ~s: ~p", [FilePath, Reason])
+    end.
