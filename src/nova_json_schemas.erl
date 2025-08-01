@@ -59,7 +59,9 @@ pre_request(Req = #{extra_state := #{json_schema := SchemaLocation}, json := JSO
                     Req2 = cowboy_req:reply(400, Req1),
                     {stop, Req2};
                 _ ->
-                    ?LOG_DEBUG("render_errors-option not set for plugin nova_json_schemas - returning plain 400-status to requester"),
+                    ?LOG_DEBUG(
+                        "render_errors-option not set for plugin nova_json_schemas - returning plain 400-status to requester"
+                    ),
                     Req0 = cowboy_req:reply(400, Req),
                     {stop, Req0}
             end
@@ -129,7 +131,7 @@ render_error([{data_invalid, FieldInfo, Type, ActualValue, Field} | Tl]) ->
         #{
             error_context => schema_violation,
             field_info => FieldInfo,
-            error_type => Type,
+            error_type => io_lib:format("~p", [Type]),
             actual_value => ActualValue,
             expected_value => Field
         }
