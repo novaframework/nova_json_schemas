@@ -38,9 +38,10 @@ load_local_schemas() ->
     {ok, Req0 :: cowboy_req:req()}
     | {stop, Req0 :: cowboy_req:req()}
     | {error, Reason :: term()}.
-pre_request(Req = #{extra_state := #{json_schema := SchemaLocation}, json := JSON}, Options) ->
+pre_request(Req = #{extra_state := #{json_schema := SchemaLocation}=Extra, json := JSON}, Options) ->
+    JesseOpts = maps:get(jesse_options, Extra, []),
     %% JSON have already been parsed so we can just continue with the validation
-    case validate_json(SchemaLocation, JSON) of
+    case validate_json(SchemaLocation, JSON, JesseOpts) of
         ok ->
             ?LOG_DEBUG("Schema validation on JSON body successful"),
             {ok, Req};
@@ -96,17 +97,17 @@ post_request(Req, _Options) ->
 %%--------------------------------------------------------------------
 -spec plugin_info() ->
     {Title :: binary(), Version :: binary(), Author :: binary(), Description :: binary(), [
-        {Key :: atom(), OptionDescription :: atom()}
+        {Key :: atom(), OptionDescription :: binary()}
     ]}.
 plugin_info() ->
-    {<<"JSON schema plugin">>, <<"0.0.1">>, <<"Niclas Axelsson <niclas@burbas.se">>,
+    {<<"JSON schema plugin">>, <<"0.0.2">>, <<"Niclas Axelsson <niclas@burbas.se">>,
         <<"Validating JSON with schemas">>, [
             {render_errors, <<"If this is set, validation-errors is returned to the requester">>}
             %% Options is specified as {Key, Description}
         ]}.
 
-validate_json(SchemaLocation, Json) ->
-    case jesse:validate(SchemaLocation, Json) of
+validate_json(SchemaLocation, Json, JesseOpts) ->
+    case jesse:validate(SchemaLocation, Json, JesseOpts) of
         {error, {database_error, _, schema_not_found}} ->
             %% Load the schema
             {ok, MainApp} = nova:get_main_app(),
@@ -116,7 +117,7 @@ validate_json(SchemaLocation, Json) ->
             JsonLib = nova:get_env(json_lib, thoas),
             {ok, Schema} = erlang:apply(JsonLib, decode, [Filecontent]),
             jesse:add_schema(SchemaLocation, Schema),
-            validate_json(SchemaLocation, Json);
+            validate_json(SchemaLocation, Json, JesseOpts);
         {error, ValidationError} ->
             {error, ValidationError};
         {ok, _} ->
