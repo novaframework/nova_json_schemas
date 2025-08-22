@@ -35,6 +35,24 @@ routes(_Environment) ->
 
 Then put `my_schema.jsons` that contains the schema in your `priv/schemas/` directory (json schemas is read related from priv-directory of your main nova application).
 
+### Additional validation and other options to Jesse
+
+The schema validation is performed by the Jesse library
+(https://github.com/for-GET/jesse). To perform additional custom
+validation, you can pass an `external_validator` option to Jesse via a
+`jesse_options` entry in the `extra_state`. Other options to Jesse are
+passed the same way:
+
+``` erlang
+  #{extra_state => #{json_schema => "...",
+                     jesse_options => [{external_validator, ValidatorFun}]
+                    }
+   }
+```
+
+The validation function takes a value and a Jesse state and should return a
+new state; see the Jesse documentation for details.
+
 
 ## Report bugs and/or contribute
 
