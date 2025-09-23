@@ -3,8 +3,8 @@
 
 -export([
     load_local_schemas/0,
-    pre_request/2,
-    post_request/2,
+    pre_request/4,
+    post_request/4,
     plugin_info/0
 ]).
 
@@ -34,19 +34,21 @@ load_local_schemas() ->
 %% Pre-request callback
 %% @end
 %%--------------------------------------------------------------------
--spec pre_request(Req :: cowboy_req:req(), Options :: map()) ->
-    {ok, Req0 :: cowboy_req:req()}
-    | {stop, Req0 :: cowboy_req:req()}
-    | {error, Reason :: term()}.
+-spec pre_request(Req :: cowboy_req:req(), Env :: any(), Options :: map(), _) ->
+    {ok, Req0 :: cowboy_req:req(), _}
+    | {stop, Req0 :: cowboy_req:req(), _}.
 pre_request(
-    Req = #{extra_state := #{json_schema := SchemaLocation} = Extra, json := JSON}, Options
+    Req = #{extra_state := #{json_schema := SchemaLocation} = Extra, json := JSON},
+    _Env,
+    Options,
+    PluginState
 ) ->
     JesseOpts = maps:get(jesse_options, Extra, []),
     %% JSON have already been parsed so we can just continue with the validation
     case validate_json(SchemaLocation, JSON, JesseOpts) of
         ok ->
             ?LOG_DEBUG("Schema validation on JSON body successful"),
-            {ok, Req};
+            {ok, Req, PluginState};
         {error, Errors} ->
             ?LOG_DEBUG("Got validation-errors on JSON body. Errors: ~p", [Errors]),
             case maps:get(render_errors, Options, false) of
@@ -58,39 +60,36 @@ pre_request(
                     ),
                     ErrorStruct = render_error(Errors),
                     ErrorJson = erlang:apply(JsonLib, encode, [ErrorStruct]),
-                    Req1 = cowboy_req:set_resp_body(ErrorJson, Req0),
-                    Req2 = cowboy_req:reply(400, Req1),
-                    {stop, Req2};
+                    Reply = {reply, 400, ErrorJson},
+                    {stop, Reply, Req0, PluginState};
                 _ ->
                     ?LOG_DEBUG(
                         "render_errors-option not set for plugin nova_json_schemas - returning plain 400-status to requester"
                     ),
-                    Req0 = cowboy_req:reply(400, Req),
-                    {stop, Req0}
+                    Reply = {reply, 400, <<>>},
+                    {stop, Reply, Req, PluginState}
             end
     end;
-pre_request(#{extra_state := #{json_schema := _SchemaLocation}}, _Options) ->
+pre_request(#{extra_state := #{json_schema := _SchemaLocation}}, _Env, _Options, _PluginState) ->
     %% The body have not been parsed. Log and error and stop
     ?LOG_ERROR(
         "JSON Schema is set in 'extra_state' but body have not yet been parsed - rearrange your plugins so that JSON plugin is ran before this.."
     ),
-    {error, body_not_parsed};
-pre_request(Req, _Options) ->
+    error(body_not_parsed);
+pre_request(Req, _Env, _Options, PluginState) ->
     %% 'json_schema' is not set or 'extra_state' is completly missing. Just continue.
     ?LOG_DEBUG("No schema is set for this route so will continue executing"),
-    {ok, Req}.
+    {ok, Req, PluginState}.
 
 %%--------------------------------------------------------------------
 %% @doc
 %% Post-request callback
 %% @end
 %%--------------------------------------------------------------------
--spec post_request(Req :: cowboy_req:req(), Options :: map()) ->
-    {ok, Req0 :: cowboy_req:req()}
-    | {stop, Req0 :: cowboy_req:req()}
-    | {error, Reason :: term()}.
-post_request(Req, _Options) ->
-    {ok, Req}.
+-spec post_request(Req :: cowboy_req:req(), Env :: _, Options :: map(), PluginState :: _) ->
+    {ok, Req0 :: cowboy_req:req(), _}.
+post_request(Req, _Env, _Options, PluginState) ->
+    {ok, Req, PluginState}.
 
 %%--------------------------------------------------------------------
 %% @doc
