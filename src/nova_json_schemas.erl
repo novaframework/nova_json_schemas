@@ -60,14 +60,14 @@ pre_request(
                     ),
                     ErrorStruct = render_error(Errors),
                     ErrorJson = erlang:apply(JsonLib, encode, [ErrorStruct]),
-                    Reply = {reply, 400, ErrorJson},
-                    {stop, Reply, Req0, PluginState};
+                    cowboy_req:reply(400, ErrorJson),
+                    {stop, Req0, PluginState};
                 _ ->
                     ?LOG_DEBUG(
                         "render_errors-option not set for plugin nova_json_schemas - returning plain 400-status to requester"
                     ),
-                    Reply = {reply, 400, <<>>},
-                    {stop, Reply, Req, PluginState}
+                    cowboy_req:reply(400, <<>>),
+                    {stop, Req, PluginState}
             end
     end;
 pre_request(#{extra_state := #{json_schema := _SchemaLocation}}, _Env, _Options, _PluginState) ->
