@@ -38,7 +38,9 @@ load_local_schemas() ->
     {ok, Req0 :: cowboy_req:req()}
     | {stop, Req0 :: cowboy_req:req()}
     | {error, Reason :: term()}.
-pre_request(Req = #{extra_state := #{json_schema := SchemaLocation}=Extra, json := JSON}, Options) ->
+pre_request(
+    Req = #{extra_state := #{json_schema := SchemaLocation} = Extra, json := JSON}, Options
+) ->
     JesseOpts = maps:get(jesse_options, Extra, []),
     %% JSON have already been parsed so we can just continue with the validation
     case validate_json(SchemaLocation, JSON, JesseOpts) of
@@ -75,7 +77,13 @@ pre_request(#{extra_state := #{json_schema := _SchemaLocation}}, _Options) ->
     {error, body_not_parsed};
 pre_request(Req, _Options) ->
     %% 'json_schema' is not set or 'extra_state' is completly missing. Just continue.
-    ?LOG_DEBUG("No schema is set for this route so will continue executing"),
+    HasBody = cowboy_req:has_body(Req),
+    if
+        HasBody ->
+            ?LOG_DEBUG("No schema is set for this route so will continue executing");
+        true ->
+            ok
+    end,
     {ok, Req}.
 
 %%--------------------------------------------------------------------
