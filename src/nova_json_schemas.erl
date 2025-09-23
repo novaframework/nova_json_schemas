@@ -38,7 +38,9 @@ load_local_schemas() ->
     {ok, Req0 :: cowboy_req:req()}
     | {stop, Req0 :: cowboy_req:req()}
     | {error, Reason :: term()}.
-pre_request(Req = #{extra_state := #{json_schema := SchemaLocation}=Extra, json := JSON}, Options) ->
+pre_request(
+    Req = #{extra_state := #{json_schema := SchemaLocation} = Extra, json := JSON}, Options
+) ->
     JesseOpts = maps:get(jesse_options, Extra, []),
     %% JSON have already been parsed so we can just continue with the validation
     case validate_json(SchemaLocation, JSON, JesseOpts) of
@@ -95,16 +97,18 @@ post_request(Req, _Options) ->
 %% nova_plugin callback. Returns information about the plugin.
 %% @end
 %%--------------------------------------------------------------------
--spec plugin_info() ->
-    {Title :: binary(), Version :: binary(), Author :: binary(), Description :: binary(), [
-        {Key :: atom(), OptionDescription :: binary()}
-    ]}.
 plugin_info() ->
-    {<<"JSON schema plugin">>, <<"0.0.2">>, <<"Niclas Axelsson <niclas@burbas.se">>,
-        <<"Validating JSON with schemas">>, [
+    #{
+        title => <<"JSON schema plugin">>,
+        description => <<"Validating JSON with schemas">>,
+        version => <<"0.2.0">>,
+        authors => [<<"Niclas Axelsson <niclas@burbas.se">>],
+        url => <<"https://github.com/novaframework/nova_json_schemas">>,
+        options => [
             {render_errors, <<"If this is set, validation-errors is returned to the requester">>}
             %% Options is specified as {Key, Description}
-        ]}.
+        ]
+    }.
 
 validate_json(SchemaLocation, Json, JesseOpts) ->
     case jesse:validate(SchemaLocation, Json, JesseOpts) of
