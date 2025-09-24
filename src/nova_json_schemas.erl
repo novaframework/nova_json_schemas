@@ -108,8 +108,11 @@ post_request(Req, _Options) ->
         {Key :: atom(), OptionDescription :: binary()}
     ]}.
 plugin_info() ->
-    {<<"JSON schema plugin">>, <<"0.0.2">>, <<"Niclas Axelsson <niclas@burbas.se">>,
-        <<"Validating JSON with schemas">>, [
+    {ok, Vsn} = application:get_key(nova_json_schemas, vsn),
+    {ok, Desc} = application:get_key(nova_json_schemas, description),
+
+    {<<"JSON schema plugin">>, list_to_binary(Vsn), <<"Niclas Axelsson <niclas@burbas.se">>,
+        list_to_binary(Desc), [
             {render_errors, <<"If this is set, validation-errors is returned to the requester">>}
             %% Options is specified as {Key, Description}
         ]}.
