@@ -143,7 +143,7 @@ render_error([{data_invalid, FieldInfo, Type, ActualValue, Field} | Tl]) ->
         #{
             error_context => schema_violation,
             field_info => FieldInfo,
-            error_type => io_lib:format("~p", [Type]),
+            error_type => Type,
             actual_value => ActualValue,
             expected_value => Field
         }
