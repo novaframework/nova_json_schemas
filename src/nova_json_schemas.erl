@@ -3,8 +3,8 @@
 
 -export([
     load_local_schemas/0,
-    pre_request/2,
-    post_request/2,
+    pre_request/4,
+    post_request/4,
     plugin_info/0
 ]).
 
@@ -34,19 +34,18 @@ load_local_schemas() ->
 %% Pre-request callback
 %% @end
 %%--------------------------------------------------------------------
--spec pre_request(Req :: cowboy_req:req(), Options :: map()) ->
-    {ok, Req0 :: cowboy_req:req()}
-    | {stop, Req0 :: cowboy_req:req()}
+-spec pre_request(Req :: cowboy_req:req(), Env :: any(), Options :: map(), State :: any()) ->
+    {ok, Req0 :: cowboy_req:req(), NewState :: any()}
+    | {stop, Req0 :: cowboy_req:req(), NewState :: any()}
     | {error, Reason :: term()}.
 pre_request(
-    Req = #{extra_state := #{json_schema := SchemaLocation} = Extra, json := JSON}, Options
+    Req = #{extra_state := #{json_schema := SchemaLocation} = Extra, json := JSON}, _Env, Options, State
 ) ->
     JesseOpts = maps:get(jesse_options, Extra, []),
-    %% JSON have already been parsed so we can just continue with the validation
     case validate_json(SchemaLocation, JSON, JesseOpts) of
         ok ->
             ?LOG_DEBUG("Schema validation on JSON body successful"),
-            {ok, Req};
+            {ok, Req, State};
         {error, Errors} ->
             ?LOG_DEBUG("Got validation-errors on JSON body. Errors: ~p", [Errors]),
             case maps:get(render_errors, Options, false) of
@@ -59,62 +58,53 @@ pre_request(
                     ErrorJson = json:encode(ErrorStruct),
                     Req1 = cowboy_req:set_resp_body(ErrorJson, Req0),
                     Req2 = cowboy_req:reply(400, Req1),
-                    {stop, Req2};
+                    {stop, Req2, State};
                 _ ->
                     ?LOG_DEBUG(
                         "render_errors-option not set for plugin nova_json_schemas - returning plain 400-status to requester"
                     ),
                     Req0 = cowboy_req:reply(400, Req),
-                    {stop, Req0}
+                    {stop, Req0, State}
             end
     end;
-pre_request(#{extra_state := #{json_schema := _SchemaLocation}}, _Options) ->
-    %% The body have not been parsed. Log and error and stop
+pre_request(#{extra_state := #{json_schema := _SchemaLocation}}, _Env, _Options, _State) ->
     ?LOG_ERROR(
         "JSON Schema is set in 'extra_state' but body have not yet been parsed - rearrange your plugins so that JSON plugin is ran before this.."
     ),
     {error, body_not_parsed};
-pre_request(Req, _Options) ->
-    %% 'json_schema' is not set or 'extra_state' is completly missing. Just continue.
-    HasBody = cowboy_req:has_body(Req),
-    if
-        HasBody ->
-            ?LOG_DEBUG("No schema is set for this route so will continue executing");
-        true ->
-            ok
-    end,
-    {ok, Req}.
+pre_request(Req, _Env, _Options, State) ->
+    {ok, Req, State}.
 
 %%--------------------------------------------------------------------
 %% @doc
 %% Post-request callback
 %% @end
 %%--------------------------------------------------------------------
--spec post_request(Req :: cowboy_req:req(), Options :: map()) ->
-    {ok, Req0 :: cowboy_req:req()}
-    | {stop, Req0 :: cowboy_req:req()}
-    | {error, Reason :: term()}.
-post_request(Req, _Options) ->
-    {ok, Req}.
+-spec post_request(Req :: cowboy_req:req(), Env :: any(), Options :: map(), State :: any()) ->
+    {ok, Req0 :: cowboy_req:req(), NewState :: any()}.
+post_request(Req, _Env, _Options, State) ->
+    {ok, Req, State}.
 
 %%--------------------------------------------------------------------
 %% @doc
 %% nova_plugin callback. Returns information about the plugin.
 %% @end
 %%--------------------------------------------------------------------
--spec plugin_info() ->
-    {Title :: binary(), Version :: binary(), Author :: binary(), Description :: binary(), [
-        {Key :: atom(), OptionDescription :: binary()}
-    ]}.
+-spec plugin_info() -> #{title := binary(),
+                         version := binary(),
+                         url := binary(),
+                         authors := [binary()],
+                         description := binary(),
+                         options := [{Key :: atom(), OptionDescription :: binary()}]}.
 plugin_info() ->
-    {ok, Vsn} = application:get_key(nova_json_schemas, vsn),
-    {ok, Desc} = application:get_key(nova_json_schemas, description),
-
-    {<<"JSON schema plugin">>, list_to_binary(Vsn), <<"Niclas Axelsson <niclas@burbas.se">>,
-        list_to_binary(Desc), [
-            {render_errors, <<"If this is set, validation-errors is returned to the requester">>}
-            %% Options is specified as {Key, Description}
-        ]}.
+    #{title => <<"Nova JSON Schema plugin">>,
+      version => <<"0.2.0">>,
+      url => <<"https://github.com/novaframework/nova_json_schemas">>,
+      authors => [<<"Niclas Axelsson <niclas@burbas.se>">>],
+      description => <<"Validates JSON request bodies against JSON schemas using jesse">>,
+      options => [
+          {render_errors, <<"If true, validation errors are returned as JSON to the requester">>}
+      ]}.
 
 validate_json(SchemaLocation, Json, JesseOpts) ->
     case jesse:validate(SchemaLocation, Json, JesseOpts) of
