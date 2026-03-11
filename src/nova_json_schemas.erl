@@ -2,6 +2,7 @@
 -behaviour(nova_plugin).
 
 -export([
+    init/0,
     load_local_schemas/0,
     pre_request/4,
     post_request/4,
@@ -9,6 +10,11 @@
 ]).
 
 -include_lib("kernel/include/logger.hrl").
+
+init() ->
+    jesse_database:load_all(),
+    load_local_schemas(),
+    #{}.
 
 %%--------------------------------------------------------------------
 %% @doc
