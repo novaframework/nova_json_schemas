@@ -52,12 +52,11 @@ pre_request(
             case maps:get(render_errors, Options, false) of
                 true ->
                     ?LOG_DEBUG("Rendering validation-errors and send back to requester"),
-                    JsonLib = nova:get_env(json_lib, thoas),
                     Req0 = cowboy_req:set_resp_headers(
                         #{<<"content-type">> => <<"application/json">>}, Req
                     ),
                     ErrorStruct = render_error(Errors),
-                    ErrorJson = erlang:apply(JsonLib, encode, [ErrorStruct]),
+                    ErrorJson = json:encode(ErrorStruct),
                     Req1 = cowboy_req:set_resp_body(ErrorJson, Req0),
                     Req2 = cowboy_req:reply(400, Req1),
                     {stop, Req2};
@@ -125,8 +124,7 @@ validate_json(SchemaLocation, Json, JesseOpts) ->
             PrivDir = code:priv_dir(MainApp),
             SchemaLocation0 = filename:join([PrivDir, SchemaLocation]),
             {ok, Filecontent} = file:read_file(SchemaLocation0),
-            JsonLib = nova:get_env(json_lib, thoas),
-            {ok, Schema} = erlang:apply(JsonLib, decode, [Filecontent]),
+            Schema = json:decode(Filecontent),
             jesse:add_schema(SchemaLocation, Schema),
             validate_json(SchemaLocation, Json, JesseOpts);
         {error, ValidationError} ->
@@ -178,12 +176,12 @@ load_schemas_from_dir(Dir, RelativePrefix) ->
 load_schema_file(FilePath, RelativePath) ->
     case file:read_file(FilePath) of
         {ok, FileContent} ->
-            JsonLib = nova:get_env(json_lib, thoas),
-            case erlang:apply(JsonLib, decode, [FileContent]) of
-                {ok, Schema} ->
+            try json:decode(FileContent) of
+                Schema ->
                     jesse:add_schema(RelativePath, Schema),
-                    ?LOG_DEBUG("Loaded JSON schema: ~s", [RelativePath]);
-                {error, Reason} ->
+                    ?LOG_DEBUG("Loaded JSON schema: ~s", [RelativePath])
+            catch
+                error:Reason ->
                     ?LOG_ERROR("Failed to decode JSON schema ~s: ~p", [FilePath, Reason])
             end;
         {error, Reason} ->
