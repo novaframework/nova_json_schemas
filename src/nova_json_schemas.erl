@@ -10,6 +10,13 @@
 
 -include_lib("kernel/include/logger.hrl").
 
+-ifdef(TEST).
+-export([
+    render_error/1,
+    validate_json/3
+]).
+-endif.
+
 %%--------------------------------------------------------------------
 %% @doc
 %% Load all local JSON schemas from the main application's
