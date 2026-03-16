@@ -11,6 +11,20 @@
 
 -include_lib("kernel/include/logger.hrl").
 
+-ifdef(TEST).
+-export([
+    render_errors/1,
+    render_one_error/1,
+    build_problem_details/3,
+    group_errors_by_field/1,
+    to_json_pointer/1,
+    format_error_message/3,
+    safe_format/1,
+    safe_value/1,
+    validate_json/3
+]).
+-endif.
+
 init() ->
     jesse_database:load_all(),
     load_local_schemas(),
@@ -105,7 +119,8 @@ plugin_info() ->
 %%% Internal functions
 
 validate_json(SchemaLocation, Json, JesseOpts) ->
-    case jesse:validate(SchemaLocation, Json, JesseOpts) of
+    Key = ensure_list(SchemaLocation),
+    case jesse:validate(Key, Json, JesseOpts) of
         {error, {database_error, _, schema_not_found}} ->
             {ok, MainApp} = nova:get_main_app(),
             PrivDir = code:priv_dir(MainApp),
@@ -331,3 +346,6 @@ load_schema_file(FilePath, RelativePath) ->
         {error, Reason} ->
             ?LOG_ERROR("Failed to read schema file ~s: ~p", [FilePath, Reason])
     end.
+
+ensure_list(V) when is_list(V) -> V;
+ensure_list(V) when is_binary(V) -> binary_to_list(V).
