@@ -180,6 +180,21 @@ render_one_error({data_invalid, _Schema, {ErrorType, Details}, Value, Path}) ->
         actual_value => safe_value(Value),
         expected => safe_value(Details)
     };
+render_one_error({data_invalid, Schema, wrong_type, Value, Path}) ->
+    Expected = maps:get(<<"type">>, Schema, undefined),
+    #{
+        path => to_json_pointer(Path),
+        type => wrong_type,
+        message => format_error_message(wrong_type, Expected, Value),
+        actual_value => safe_value(Value),
+        expected => safe_value(Expected)
+    };
+render_one_error({data_invalid, _Schema, missing_required_property, Property, Path}) ->
+    #{
+        path => to_json_pointer(Path),
+        type => missing_required_property,
+        message => format_error_message(missing_required_property, Property, undefined)
+    };
 render_one_error({data_invalid, _Schema, ErrorType, Value, Path}) ->
     #{
         path => to_json_pointer(Path),

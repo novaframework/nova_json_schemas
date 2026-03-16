@@ -169,6 +169,25 @@ render_one_error_data_invalid_simple_test() ->
     ?assertEqual(<<"foo">>, maps:get(actual_value, Result)),
     ?assertNot(maps:is_key(expected, Result)).
 
+render_one_error_wrong_type_from_schema_test() ->
+    Schema = #{<<"type">> => <<"integer">>},
+    Error = {data_invalid, Schema, wrong_type, <<"old">>, [<<"age">>]},
+    Result = nova_json_schemas:render_one_error(Error),
+    ?assertEqual(<<"/age">>, maps:get(path, Result)),
+    ?assertEqual(wrong_type, maps:get(type, Result)),
+    ?assertEqual(<<"Must be of type integer">>, maps:get(message, Result)),
+    ?assertEqual(<<"old">>, maps:get(actual_value, Result)),
+    ?assertEqual(<<"integer">>, maps:get(expected, Result)).
+
+render_one_error_missing_required_property_test() ->
+    Schema = #{<<"required">> => [<<"name">>, <<"age">>]},
+    Error = {data_invalid, Schema, missing_required_property, <<"age">>, []},
+    Result = nova_json_schemas:render_one_error(Error),
+    ?assertEqual(<<"/">>, maps:get(path, Result)),
+    ?assertEqual(missing_required_property, maps:get(type, Result)),
+    ?assertEqual(<<"Missing required property: age">>, maps:get(message, Result)),
+    ?assertNot(maps:is_key(actual_value, Result)).
+
 render_one_error_schema_invalid_with_details_test() ->
     Error = {schema_invalid, #{}, {missing_required_property, <<"id">>}},
     Result = nova_json_schemas:render_one_error(Error),
