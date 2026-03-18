@@ -45,7 +45,10 @@ load_local_schemas() ->
     | {stop, Req0 :: cowboy_req:req(), NewState :: any()}
     | {error, Reason :: term()}.
 pre_request(
-    Req = #{extra_state := #{json_schema := SchemaLocation} = Extra, json := JSON}, _Env, Options, State
+    Req = #{extra_state := #{json_schema := SchemaLocation} = Extra, json := JSON},
+    _Env,
+    Options,
+    State
 ) ->
     JesseOpts = maps:get(jesse_options, Extra, []),
     case validate_json(SchemaLocation, JSON, JesseOpts) of
@@ -96,21 +99,26 @@ post_request(Req, _Env, _Options, State) ->
 %% nova_plugin callback. Returns information about the plugin.
 %% @end
 %%--------------------------------------------------------------------
--spec plugin_info() -> #{title := binary(),
-                         version := binary(),
-                         url := binary(),
-                         authors := [binary()],
-                         description := binary(),
-                         options := [{Key :: atom(), OptionDescription :: binary()}]}.
+-spec plugin_info() ->
+    #{
+        title := binary(),
+        version := binary(),
+        url := binary(),
+        authors := [binary()],
+        description := binary(),
+        options := [{Key :: atom(), OptionDescription :: binary()}]
+    }.
 plugin_info() ->
-    #{title => <<"Nova JSON Schema plugin">>,
-      version => <<"0.2.0">>,
-      url => <<"https://github.com/novaframework/nova_json_schemas">>,
-      authors => [<<"Niclas Axelsson <niclas@burbas.se>">>],
-      description => <<"Validates JSON request bodies against JSON schemas using jesse">>,
-      options => [
-          {render_errors, <<"If true, validation errors are returned as JSON to the requester">>}
-      ]}.
+    #{
+        title => <<"Nova JSON Schema plugin">>,
+        version => <<"0.2.0">>,
+        url => <<"https://github.com/novaframework/nova_json_schemas">>,
+        authors => [<<"Niclas Axelsson <niclas@burbas.se>">>],
+        description => <<"Validates JSON request bodies against JSON schemas using jesse">>,
+        options => [
+            {render_errors, <<"If true, validation errors are returned as JSON to the requester">>}
+        ]
+    }.
 
 validate_json(SchemaLocation, Json, JesseOpts) ->
     case jesse:validate(SchemaLocation, Json, JesseOpts) of
