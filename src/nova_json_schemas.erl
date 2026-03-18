@@ -140,17 +140,28 @@ validate_json(SchemaLocation, Json, JesseOpts) ->
 render_error([]) ->
     [];
 render_error([{data_invalid, FieldInfo, Type, ActualValue, Field} | Tl]) ->
-    %% We don't do any fancy with this currently.
     [
         #{
             error_context => schema_violation,
-            field_info => FieldInfo,
-            error_type => Type,
-            actual_value => ActualValue,
-            expected_value => Field
+            field_info => to_json_safe(FieldInfo),
+            error_type => to_json_safe(Type),
+            actual_value => to_json_safe(ActualValue),
+            expected_value => to_json_safe(Field)
         }
         | render_error(Tl)
     ].
+
+%% @doc Convert arbitrary Erlang terms to JSON-safe values.
+%% json:encode/1 cannot encode tuples, pids, refs, etc.
+-spec to_json_safe(term()) -> term().
+to_json_safe(V) when is_binary(V) -> V;
+to_json_safe(V) when is_atom(V) -> V;
+to_json_safe(V) when is_number(V) -> V;
+to_json_safe(V) when is_list(V) -> [to_json_safe(E) || E <- V];
+to_json_safe(V) when is_map(V) ->
+    maps:fold(fun(K, Val, Acc) -> Acc#{to_json_safe(K) => to_json_safe(Val)} end, #{}, V);
+to_json_safe(V) ->
+    iolist_to_binary(io_lib:format("~tp", [V])).
 
 load_schemas_from_dir(Dir, RelativePrefix) ->
     case file:list_dir(Dir) of
