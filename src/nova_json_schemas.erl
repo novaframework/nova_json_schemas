@@ -121,15 +121,16 @@ plugin_info() ->
     }.
 
 validate_json(SchemaLocation, Json, JesseOpts) ->
-    case jesse:validate(SchemaLocation, Json, JesseOpts) of
+    SchemaKey = ensure_list(SchemaLocation),
+    case jesse:validate(SchemaKey, Json, JesseOpts) of
         {error, {database_error, _, schema_not_found}} ->
             %% Load the schema
             {ok, MainApp} = nova:get_main_app(),
             PrivDir = code:priv_dir(MainApp),
-            SchemaLocation0 = filename:join([PrivDir, SchemaLocation]),
-            {ok, Filecontent} = file:read_file(SchemaLocation0),
+            SchemaPath = filename:join([PrivDir, SchemaLocation]),
+            {ok, Filecontent} = file:read_file(SchemaPath),
             Schema = json:decode(Filecontent),
-            jesse:add_schema(SchemaLocation, Schema),
+            jesse:add_schema(SchemaKey, Schema),
             validate_json(SchemaLocation, Json, JesseOpts);
         {error, ValidationError} ->
             {error, ValidationError};
@@ -193,7 +194,7 @@ load_schema_file(FilePath, RelativePath) ->
         {ok, FileContent} ->
             try json:decode(FileContent) of
                 Schema ->
-                    jesse:add_schema(RelativePath, Schema),
+                    jesse:add_schema(ensure_list(RelativePath), Schema),
                     ?LOG_DEBUG("Loaded JSON schema: ~s", [RelativePath])
             catch
                 error:Reason ->
@@ -202,3 +203,6 @@ load_schema_file(FilePath, RelativePath) ->
         {error, Reason} ->
             ?LOG_ERROR("Failed to read schema file ~s: ~p", [FilePath, Reason])
     end.
+
+ensure_list(V) when is_binary(V) -> binary_to_list(V);
+ensure_list(V) when is_list(V) -> V.
