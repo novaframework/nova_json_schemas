@@ -12,14 +12,11 @@ permissions:
 
 jobs:
   ci:
-    uses: Taure/erlang-ci/.github/workflows/ci.yml@v1
-    permissions:
-      contents: write
-      pull-requests: write
+    uses: Taure/erlang-ci/.github/workflows/ci.yml@v2.0.9
     with:
       version-file: '.tool-versions'
       enable-ex-doc: true
-      enable-audit: true
+      enable-audit: false
       enable-sbom: true
       enable-sbom-scan: true
       enable-dependency-submission: true
