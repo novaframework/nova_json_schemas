@@ -31,7 +31,7 @@ routes(_Environment) ->
                 route("/array", "schemas/strings.json"),
                 route_with_errors("/all_errors", "schemas/strings.json", infinity),
                 route_with_errors("/many_errors", "schemas/strings.json", 50),
-                route_with_errors("/negative_errors", "schemas/strings.json", -1),
+                route_with_errors("/two_errors", "schemas/strings.json", 2),
                 route("/unique", "schemas/unique.json"),
                 route("/keyed", "schemas/keyed.json"),
                 route("/multiple_of_6", "schemas/multiple_of_6.json"),
@@ -51,23 +51,9 @@ routes(_Environment) ->
             security => false,
             plugins => [
                 {pre_request, nova_request_plugin, #{decode_json_body => true}},
-                {pre_request, nova_json_schemas, #{render_errors => true, max_errors => 20}}
+                {pre_request, nova_json_schemas, #{render_errors => true}}
             ],
-            routes => [route("/tags", "schemas/tag.json")]
-        },
-        #{
-            prefix => "/capped",
-            security => false,
-            plugins => [
-                {pre_request, nova_request_plugin, #{decode_json_body => true}},
-                {pre_request, nova_json_schemas, #{render_errors => true, max_errors => 3}}
-            ],
-            routes => [
-                route("/array", "schemas/strings.json"),
-                route_with_errors("/all_errors", "schemas/strings.json", infinity),
-                route_with_errors("/many_errors", "schemas/strings.json", 50),
-                route_with_errors("/first_error", "schemas/strings.json", 0)
-            ]
+            routes => [route_with_errors("/tags", "schemas/tag.json", infinity)]
         },
         #{
             prefix => "/plain",

@@ -20,7 +20,6 @@ See the README for the plugin order, the response codes and the error body.
 
 -define(BODY_METHODS, [~"POST", ~"PUT", ~"PATCH"]).
 -define(UNDECODED_METHODS, [~"GET", ~"DELETE"]).
--define(DEFAULT_MAX_ERRORS, 1).
 -define(MAX_POINTER_BYTES, 256).
 
 init() ->
@@ -102,8 +101,7 @@ plugin_info() ->
         authors => [~"Niclas Axelsson <niclas@burbas.se>"],
         description => ~"Validates JSON request bodies against JSON schemas using jesse",
         options => [
-            {render_errors, ~"If true, validation errors are returned as JSON to the requester"},
-            {max_errors, ~"Most errors reported in the error body (default 1)"}
+            {render_errors, ~"If true, validation errors are returned as JSON to the requester"}
         ]
     }.
 
@@ -126,18 +124,14 @@ schema_key(SchemaLocation) ->
     SchemaLocation.
 
 validate_request(SchemaKey, JSON, Extra, Options, Req, State) ->
-    RouteOpts = maps:get(jesse_options, Extra, []),
     RenderErrors = maps:get(render_errors, Options, false) =:= true,
-    AllowedErrors = allowed_errors(RenderErrors, Options, RouteOpts),
-    JesseOpts =
-        [{allowed_errors, AllowedErrors} | proplists:delete(allowed_errors, RouteOpts)] ++
-            [{schema_loader_fun, fun jesse_database:load/1}],
+    JesseOpts = jesse_options(RenderErrors, maps:get(jesse_options, Extra, [])),
     case validate_json(SchemaKey, JSON, JesseOpts) of
         ok ->
             {ok, Req, State};
         {invalid, Errors} ->
             ?LOG_DEBUG(#{msg => ~"JSON body failed schema validation", schema => SchemaKey}),
-            reply_invalid(Errors, RenderErrors, AllowedErrors + 1, Req, State);
+            reply_invalid(Errors, RenderErrors, Req, State);
         {schema_error, Reason} ->
             ?LOG_ERROR(#{
                 msg => ~"JSON schema cannot be used for validation",
@@ -147,39 +141,20 @@ validate_request(SchemaKey, JSON, Extra, Options, Req, State) ->
             {stop, cowboy_req:reply(500, Req), State}
     end.
 
-%% jesse stops at error AllowedErrors + 1, so a route value can only lower
-%% the plugin's cap.
-allowed_errors(false, _Options, _RouteOpts) ->
-    0;
-allowed_errors(true, Options, RouteOpts) ->
-    PluginAllowed = max_errors(Options) - 1,
-    case proplists:get_value(allowed_errors, RouteOpts) of
-        RouteAllowed when is_integer(RouteAllowed), RouteAllowed >= 0 ->
-            min(RouteAllowed, PluginAllowed);
-        _ ->
-            PluginAllowed
-    end.
+%% A bare 400 needs only the first error, so the route's allowed_errors
+%% applies only when the errors are rendered.
+jesse_options(true, RouteOpts) ->
+    RouteOpts ++ [{schema_loader_fun, fun jesse_database:load/1}];
+jesse_options(false, RouteOpts) ->
+    [{allowed_errors, 0} | proplists:delete(allowed_errors, RouteOpts)] ++
+        [{schema_loader_fun, fun jesse_database:load/1}].
 
-max_errors(Options) ->
-    case maps:get(max_errors, Options, ?DEFAULT_MAX_ERRORS) of
-        MaxErrors when is_integer(MaxErrors), MaxErrors > 0 -> MaxErrors;
-        Other -> error({invalid_option, max_errors, Other})
-    end.
-
-reply_invalid(Errors, true, Cap, Req, State) ->
-    {Reported, Truncated} = truncate(Errors, Cap),
-    Body = json:encode(#{
-        errors => [render_error(Error) || Error <- Reported],
-        truncated => Truncated
-    }),
+reply_invalid(Errors, true, Req, State) ->
+    Body = json:encode([render_error(Error) || Error <- Errors]),
     Req0 = cowboy_req:reply(400, #{~"content-type" => ~"application/json"}, Body, Req),
     {stop, Req0, State};
-reply_invalid(_Errors, false, _Cap, Req, State) ->
+reply_invalid(_Errors, false, Req, State) ->
     {stop, cowboy_req:reply(400, Req), State}.
-
-%% Reaching the cap means jesse stopped there, so more errors may exist.
-truncate(Errors, Cap) ->
-    {lists:sublist(Errors, Cap), length(Errors) >= Cap}.
 
 reject_undecoded_body(SchemaKey, #{method := Method} = Req, State) ->
     BodyRequired = lists:member(Method, ?BODY_METHODS),
@@ -327,7 +302,7 @@ render_error({data_invalid, _Schema, Info, Value, Path}) ->
         #{
             error_context => schema_violation,
             error_type => error_type(Info),
-            pointer => json_pointer(Path)
+            path => json_pointer(Path)
         },
         error_detail(Info, Value)
     ).

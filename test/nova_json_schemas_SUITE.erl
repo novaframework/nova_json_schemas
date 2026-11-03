@@ -25,9 +25,7 @@
     missing_schema_file_is_500/1,
     route_without_schema_is_untouched/1,
     errors_stop_at_the_first_by_default/1,
-    max_errors_option_sets_the_cap/1,
-    route_allowed_errors_cannot_raise_the_cap/1,
-    route_allowed_errors_can_lower_the_cap/1,
+    route_allowed_errors_raises_the_count/1,
     route_allowed_errors_is_ignored_without_render_errors/1,
     mixed_case_json_type_is_415/1,
     patch_415_sends_accept_patch/1,
@@ -68,9 +66,7 @@ all() ->
         missing_schema_file_is_500,
         route_without_schema_is_untouched,
         errors_stop_at_the_first_by_default,
-        max_errors_option_sets_the_cap,
-        route_allowed_errors_cannot_raise_the_cap,
-        route_allowed_errors_can_lower_the_cap,
+        route_allowed_errors_raises_the_count,
         route_allowed_errors_is_ignored_without_render_errors,
         mixed_case_json_type_is_415,
         patch_415_sends_accept_patch,
@@ -207,25 +203,24 @@ valid_body_passes(_Config) ->
 render_errors_lists_every_error(_Config) ->
     {400, Headers, Body} = post_json("/collect/tags", #{~"name" => 5, ~"extra" => true}),
     ?assertMatch({0, _}, binary:match(header(~"content-type", Headers), ~"application/json")),
-    #{~"truncated" := false} = json:decode(Body),
     Errors = decode_errors(Body),
     ?assertEqual(
         lists:sort([
             #{
                 ~"error_context" => ~"schema_violation",
                 ~"error_type" => ~"missing_required_property",
-                ~"pointer" => ~"",
+                ~"path" => ~"",
                 ~"property" => ~"slug"
             },
             #{
                 ~"error_context" => ~"schema_violation",
                 ~"error_type" => ~"wrong_type",
-                ~"pointer" => ~"/name"
+                ~"path" => ~"/name"
             },
             #{
                 ~"error_context" => ~"schema_violation",
                 ~"error_type" => ~"no_extra_properties_allowed",
-                ~"pointer" => ~"/extra"
+                ~"path" => ~"/extra"
             }
         ]),
         lists:sort(Errors)
@@ -237,7 +232,7 @@ render_errors_hides_schema_and_paths(_Config) ->
     ?assertEqual(nomatch, binary:match(Body, ~"properties")),
     [
         ?assertEqual(
-            [], maps:keys(Error) -- [~"error_context", ~"error_type", ~"pointer", ~"property"]
+            [], maps:keys(Error) -- [~"error_context", ~"error_type", ~"path", ~"property"]
         )
      || Error <- decode_errors(Body)
     ].
@@ -249,7 +244,7 @@ render_errors_uses_json_pointer_paths(_Config) ->
         ~"tags" => [~"ok", 1],
         ~"a/b~c" => ~"x"
     }),
-    Paths = lists:sort([maps:get(~"pointer", Error) || Error <- decode_errors(Body)]),
+    Paths = lists:sort([maps:get(~"path", Error) || Error <- decode_errors(Body)]),
     ?assertEqual([~"/a~1b~0c", ~"/tags/1"], Paths).
 
 jesse_allowed_errors_can_be_overridden(_Config) ->
@@ -314,37 +309,15 @@ route_without_schema_is_untouched(_Config) ->
 
 errors_stop_at_the_first_by_default(_Config) ->
     {400, _, Body} = post_json("/array", lists:duplicate(10000, 1)),
-    ?assertMatch(#{~"truncated" := true}, json:decode(Body)),
     ?assertEqual(1, length(decode_errors(Body))).
 
-max_errors_option_sets_the_cap(_Config) ->
-    {400, _, Body} = post_json("/capped/array", lists:duplicate(10, 1)),
-    ?assertMatch(#{~"truncated" := true}, json:decode(Body)),
-    ?assertEqual(3, length(decode_errors(Body))),
-    {400, _, AtCap} = post_json("/capped/array", lists:duplicate(3, 1)),
-    ?assertMatch(#{~"truncated" := true}, json:decode(AtCap)),
-    ?assertEqual(3, length(decode_errors(AtCap))),
-    {400, _, BelowCap} = post_json("/capped/array", lists:duplicate(2, 1)),
-    ?assertMatch(#{~"truncated" := false}, json:decode(BelowCap)),
-    ?assertEqual(2, length(decode_errors(BelowCap))).
-
-route_allowed_errors_cannot_raise_the_cap(_Config) ->
-    {400, _, Body} = post_json("/all_errors", lists:duplicate(30, 1)),
-    ?assertMatch(#{~"truncated" := true}, json:decode(Body)),
-    ?assertEqual(1, length(decode_errors(Body))),
-    {400, _, Capped} = post_json("/capped/all_errors", lists:duplicate(30, 1)),
-    ?assertEqual(3, length(decode_errors(Capped))),
+route_allowed_errors_raises_the_count(_Config) ->
+    {400, _, All} = post_json("/all_errors", lists:duplicate(30, 1)),
+    ?assertEqual(30, length(decode_errors(All))),
     {400, _, Many} = post_json("/many_errors", lists:duplicate(30, 1)),
-    ?assertEqual(1, length(decode_errors(Many))),
-    {400, _, CappedMany} = post_json("/capped/many_errors", lists:duplicate(30, 1)),
-    ?assertEqual(3, length(decode_errors(CappedMany))),
-    {400, _, Negative} = post_json("/negative_errors", lists:duplicate(30, 1)),
-    ?assertEqual(1, length(decode_errors(Negative))).
-
-route_allowed_errors_can_lower_the_cap(_Config) ->
-    {400, _, Body} = post_json("/capped/first_error", lists:duplicate(10, 1)),
-    ?assertMatch(#{~"truncated" := true}, json:decode(Body)),
-    ?assertEqual(1, length(decode_errors(Body))).
+    ?assertEqual(30, length(decode_errors(Many))),
+    {400, _, Two} = post_json("/two_errors", lists:duplicate(30, 1)),
+    ?assertEqual(3, length(decode_errors(Two))).
 
 route_allowed_errors_is_ignored_without_render_errors(_Config) ->
     {Millis, {400, _, <<>>}} = timed_post("/plain/unique_all_errors", huge_duplicate_ids()),
@@ -375,16 +348,16 @@ unique_items_on_a_huge_array_fails_fast(_Config) ->
     {Millis, {400, _, Body}} = timed_post("/unique", huge_duplicate_ids()),
     ?assert(Millis < 2000, Millis),
     ?assertMatch(
-        [#{~"error_type" := ~"wrong_size", ~"pointer" := ~"/ids"}], decode_errors(Body)
+        [#{~"error_type" := ~"wrong_size", ~"path" := ~"/ids"}], decode_errors(Body)
     ).
 
 refs_between_loaded_schemas_resolve(_Config) ->
     {200, _, _} = post_json("/refs/relative", #{~"x" => ~"ok"}),
     {400, _, Relative} = post_json("/refs/relative", #{~"x" => 1}),
-    ?assertMatch([#{~"error_type" := ~"wrong_type", ~"pointer" := ~"/x"}], decode_errors(Relative)),
+    ?assertMatch([#{~"error_type" := ~"wrong_type", ~"path" := ~"/x"}], decode_errors(Relative)),
     {200, _, _} = post_json("/refs/by_id", #{~"x" => ~"ok"}),
     {400, _, ById} = post_json("/refs/by_id", #{~"x" => 1}),
-    ?assertMatch([#{~"error_type" := ~"wrong_type", ~"pointer" := ~"/x"}], decode_errors(ById)).
+    ?assertMatch([#{~"error_type" := ~"wrong_type", ~"path" := ~"/x"}], decode_errors(ById)).
 
 refs_are_not_fetched_over_the_network(Config) ->
     {ok, Listen} = gen_tcp:listen(0, [binary, {active, false}, {reuseaddr, true}]),
@@ -416,13 +389,13 @@ long_keys_give_a_bounded_pointer(_Config) ->
     Key = binary:copy(~"~", 100000),
     {400, _, Body} = post_json("/keyed", #{Key => [1]}),
     ?assert(byte_size(Body) < 1024, byte_size(Body)),
-    ?assertMatch([#{~"pointer" := ~""}], decode_errors(Body)),
+    ?assertMatch([#{~"path" := ~""}], decode_errors(Body)),
     Segment = binary:copy(~"k", 254),
     {400, _, Ancestor} = post_json("/keyed", #{Segment => [1]}),
-    ?assertMatch([#{~"pointer" := <<"/", Segment:254/binary>>}], decode_errors(Ancestor)),
+    ?assertMatch([#{~"path" := <<"/", Segment:254/binary>>}], decode_errors(Ancestor)),
     Short = binary:copy(~"k", 253),
     {400, _, Full} = post_json("/keyed", #{Short => [1]}),
-    ?assertMatch([#{~"pointer" := <<"/", Short:253/binary, "/0">>}], decode_errors(Full)).
+    ?assertMatch([#{~"path" := <<"/", Short:253/binary, "/0">>}], decode_errors(Full)).
 
 huge_integer_is_400_under_draft6(_Config) ->
     assert_huge_integer_is_400("/multiple_of_6"),
@@ -442,7 +415,7 @@ assert_huge_integer_is_400(Path) ->
             #{
                 ~"error_context" => ~"schema_violation",
                 ~"error_type" => ~"not_multiple_of",
-                ~"pointer" => ~""
+                ~"path" => ~""
             }
         ],
         decode_errors(Body)
@@ -450,7 +423,7 @@ assert_huge_integer_is_400(Path) ->
     ?assertEqual([], ets:lookup(?LOG_TABLE, error)),
     {400, _, Small} = post_json(Path, #{~"n" => 3}),
     ?assertMatch(
-        [#{~"error_type" := ~"not_multiple_of", ~"pointer" := ~"/n"}], decode_errors(Small)
+        [#{~"error_type" := ~"not_multiple_of", ~"path" := ~"/n"}], decode_errors(Small)
     ),
     {200, _, _} = post_json(Path, #{~"n" => 4}).
 
@@ -581,7 +554,7 @@ recv_all(Socket, Acc) ->
     end.
 
 decode_errors(Body) ->
-    #{~"errors" := Errors} = json:decode(Body),
+    Errors = json:decode(Body),
     true = is_list(Errors),
     Errors.
 

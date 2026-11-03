@@ -125,37 +125,29 @@ missing its content or the content is invalid.
 ## Error body
 
 With `render_errors => true`, a body that fails validation gets a `400` with
-`content-type: application/json` and a JSON object. `errors` holds one object
-per error, up to `max_errors` (default 1). Validation stops once it reaches
-that many errors, so `truncated` is `true` when `errors` is at the cap and the
-body may have more errors than are listed. This example used
-`max_errors => 20`:
+`content-type: application/json` and a JSON array with one object per error.
+jesse stops at the first error unless the route sets `allowed_errors` in its
+`jesse_options` (see [Options](#options)). With `{allowed_errors, infinity}`:
 
 ```json
-{
-  "errors": [
-    {"error_context": "schema_violation", "error_type": "missing_required_property", "pointer": "", "property": "slug"},
-    {"error_context": "schema_violation", "error_type": "wrong_type", "pointer": "/name"}
-  ],
-  "truncated": false
-}
+[
+  {"error_context": "schema_violation", "error_type": "missing_required_property", "path": "", "property": "slug"},
+  {"error_context": "schema_violation", "error_type": "wrong_type", "path": "/name"}
+]
 ```
-
-With the default `max_errors` of 1 the same body lists only the first error,
-with `"truncated": true`.
 
 | Key | Always | Meaning |
 | --- | --- | --- |
 | `error_context` | yes | always `"schema_violation"` |
 | `error_type` | yes | the jesse error, for example `wrong_type`, `missing_required_property`, `no_extra_properties_allowed`, `not_in_enum`, `wrong_length`, `not_in_range` |
-| `pointer` | yes | JSON Pointer (RFC 6901) to the value that failed; `""` is the whole body. At most 256 bytes: a longer path is cut at a whole segment, so it points to an ancestor of the value |
+| `path` | yes | JSON Pointer (RFC 6901) to the value that failed; `""` is the whole body. At most 256 bytes: a longer path is cut at a whole segment, so it points to an ancestor of the value |
 | `property` | no | the missing property, for `missing_required_property` and `missing_dependency` |
 
 The body never contains the schema, its `$id` or a server path.
 
 An integer in the body too large for jesse to divide by `multipleOf` (or
 draft-03 `divisibleBy`) fails validation with `error_type`
-`not_multiple_of` and `pointer` `""`.
+`not_multiple_of` and `path` `""`.
 
 Without `render_errors` (the default) the `400` has no body, and jesse stops at
 the first error.
@@ -167,11 +159,6 @@ Plugin options, in the plugin's options map:
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `render_errors` | `false` | send the error body described above |
-| `max_errors` | `1` | most errors listed in the error body, a positive integer |
-
-An invalid `max_errors` (zero, negative, not an integer) is not checked at
-startup. With `render_errors => true` it raises on every request that has a
-body to validate, and Nova answers `500`.
 
 Route options, in `extra_state`:
 
@@ -189,19 +176,18 @@ Route options, in `extra_state`:
 }}
 ```
 
-The plugin sets jesse's `allowed_errors` to `max_errors - 1`, so validation
-stops at the error it would list last. A route's own `allowed_errors` in
-`jesse_options` can only lower that: `{allowed_errors, 0}` stops at the first
-error, and a higher value or `infinity` is ignored. With the default
-`max_errors` of 1, `allowed_errors` is already 0, so a route value changes
-nothing. Without `render_errors`, `allowed_errors` is always 0. See the jesse
+With `render_errors => true` the route's `jesse_options` go to jesse as
+they are, so `allowed_errors` sets how many errors jesse collects: the
+default `0` stops at the first error, `{allowed_errors, N}` stops after
+`N + 1` errors and `infinity` collects them all. Without `render_errors` the
+`400` has no body, so jesse always stops at the first error. See the jesse
 documentation for the other options.
 
-A `max_errors` above 1 makes jesse keep validating after the first error.
-With jesse 1.8.x that has a cost: `uniqueItems` compares every pair of items,
-so on a large array it is quadratic in the array length, and a `maxItems`
-error no longer stops validation before it runs. Keep the default, or bound
-the request body size, on routes whose schema uses `uniqueItems`.
+An `allowed_errors` above 0 makes jesse keep validating after the first
+error. With jesse 1.8.x that has a cost: `uniqueItems` compares every pair of
+items, so on a large array it is quadratic in the array length, and a
+`maxItems` error no longer stops validation before it runs. Keep the default,
+or bound the request body size, on routes whose schema uses `uniqueItems`.
 
 ## Regular expressions
 
