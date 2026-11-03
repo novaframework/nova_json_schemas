@@ -30,6 +30,8 @@ routes(_Environment) ->
                 route("/binary_key", ~"schemas/tag.json"),
                 route("/array", "schemas/strings.json"),
                 route_with_errors("/all_errors", "schemas/strings.json", infinity),
+                route_with_errors("/many_errors", "schemas/strings.json", 50),
+                route_with_errors("/negative_errors", "schemas/strings.json", -1),
                 route("/unique", "schemas/unique.json"),
                 route("/keyed", "schemas/keyed.json"),
                 route("/multiple_of_6", "schemas/multiple_of_6.json"),
@@ -63,6 +65,7 @@ routes(_Environment) ->
             routes => [
                 route("/array", "schemas/strings.json"),
                 route_with_errors("/all_errors", "schemas/strings.json", infinity),
+                route_with_errors("/many_errors", "schemas/strings.json", 50),
                 route_with_errors("/first_error", "schemas/strings.json", 0)
             ]
         },

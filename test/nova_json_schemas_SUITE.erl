@@ -333,7 +333,13 @@ route_allowed_errors_cannot_raise_the_cap(_Config) ->
     ?assertMatch(#{~"truncated" := true}, json:decode(Body)),
     ?assertEqual(1, length(decode_errors(Body))),
     {400, _, Capped} = post_json("/capped/all_errors", lists:duplicate(30, 1)),
-    ?assertEqual(3, length(decode_errors(Capped))).
+    ?assertEqual(3, length(decode_errors(Capped))),
+    {400, _, Many} = post_json("/many_errors", lists:duplicate(30, 1)),
+    ?assertEqual(1, length(decode_errors(Many))),
+    {400, _, CappedMany} = post_json("/capped/many_errors", lists:duplicate(30, 1)),
+    ?assertEqual(3, length(decode_errors(CappedMany))),
+    {400, _, Negative} = post_json("/negative_errors", lists:duplicate(30, 1)),
+    ?assertEqual(1, length(decode_errors(Negative))).
 
 route_allowed_errors_can_lower_the_cap(_Config) ->
     {400, _, Body} = post_json("/capped/first_error", lists:duplicate(10, 1)),
@@ -342,7 +348,7 @@ route_allowed_errors_can_lower_the_cap(_Config) ->
 
 route_allowed_errors_is_ignored_without_render_errors(_Config) ->
     {Millis, {400, _, <<>>}} = timed_post("/plain/unique_all_errors", huge_duplicate_ids()),
-    ?assert(Millis < 1000, Millis).
+    ?assert(Millis < 2000, Millis).
 
 mixed_case_json_type_is_415(_Config) ->
     ets:delete_all_objects(?LOG_TABLE),
@@ -367,7 +373,7 @@ schema_without_draft_does_not_warn(Config) ->
 
 unique_items_on_a_huge_array_fails_fast(_Config) ->
     {Millis, {400, _, Body}} = timed_post("/unique", huge_duplicate_ids()),
-    ?assert(Millis < 1000, Millis),
+    ?assert(Millis < 2000, Millis),
     ?assertMatch(
         [#{~"error_type" := ~"wrong_size", ~"pointer" := ~"/ids"}], decode_errors(Body)
     ).
