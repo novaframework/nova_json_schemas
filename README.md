@@ -169,6 +169,10 @@ Plugin options, in the plugin's options map:
 | `render_errors` | `false` | send the error body described above |
 | `max_errors` | `1` | most errors listed in the error body, a positive integer |
 
+An invalid `max_errors` (zero, negative, not an integer) is not checked at
+startup. With `render_errors => true` it raises on every request that has a
+body to validate, and Nova answers `500`.
+
 Route options, in `extra_state`:
 
 | Key | Meaning |

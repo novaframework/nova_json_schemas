@@ -32,7 +32,11 @@ directories collide there.
 - It is enforced on `POST`, `PUT` and `PATCH`, which must carry a decoded
   JSON body.
 - On every other method it is enforced only when a decoded body is present.
-  Where no body is decoded, the key is not enforced.
+  Where no body is decoded, the key is not enforced. The exception is an
+  `application/json` body on a method that `nova_request_plugin` decodes
+  (anything except `GET` and `DELETE`, so `OPTIONS` or a custom method too)
+  that reached this plugin undecoded: that is a wrong plugin order and gets a
+  `500`.
 - The value is a path relative to the main application's `priv` directory, as
   a string or a binary.
 
