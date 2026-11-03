@@ -23,7 +23,14 @@
     unsupported_draft_is_500/1,
     schema_loaded_on_demand/1,
     missing_schema_file_is_500/1,
-    route_without_schema_is_untouched/1
+    route_without_schema_is_untouched/1,
+    errors_are_capped_at_max_errors_by_default/1,
+    max_errors_option_sets_the_cap/1,
+    allowed_errors_infinity_reports_every_error/1,
+    mixed_case_json_type_is_415/1,
+    patch_415_sends_accept_patch/1,
+    binary_schema_key_is_validated/1,
+    schema_without_draft_does_not_warn/1
 ]).
 
 -define(PORT, 58608).
@@ -48,7 +55,14 @@ all() ->
         unsupported_draft_is_500,
         schema_loaded_on_demand,
         missing_schema_file_is_500,
-        route_without_schema_is_untouched
+        route_without_schema_is_untouched,
+        errors_are_capped_at_max_errors_by_default,
+        max_errors_option_sets_the_cap,
+        allowed_errors_infinity_reports_every_error,
+        mixed_case_json_type_is_415,
+        patch_415_sends_accept_patch,
+        binary_schema_key_is_validated,
+        schema_without_draft_does_not_warn
     ].
 
 init_per_suite(Config) ->
@@ -62,6 +76,9 @@ init_per_suite(Config) ->
         ~"{application, schema_app, [{vsn, \"1\"}, {modules, []}, {applications, [kernel, stdlib]}]}.\n"
     ),
     write_schema(filename:join(SchemasDir, "tag.json"), tag_schema()),
+    write_schema(filename:join(SchemasDir, "strings.json"), #{
+        ~"type" => ~"array", ~"items" => #{~"type" => ~"string"}
+    }),
     write_schema(filename:join(SchemasDir, "draft07.json"), #{
         ~"$schema" => ~"http://json-schema.org/draft-07/schema#", ~"type" => ~"object"
     }),
@@ -118,24 +135,25 @@ valid_body_passes(_Config) ->
 render_errors_lists_every_error(_Config) ->
     {400, Headers, Body} = post_json("/tags", #{~"name" => 5, ~"extra" => true}),
     ?assertMatch({0, _}, binary:match(header(~"content-type", Headers), ~"application/json")),
+    #{~"truncated" := false} = json:decode(Body),
     Errors = decode_errors(Body),
     ?assertEqual(
         lists:sort([
             #{
                 ~"error_context" => ~"schema_violation",
                 ~"error_type" => ~"missing_required_property",
-                ~"path" => ~"",
+                ~"pointer" => ~"",
                 ~"property" => ~"slug"
             },
             #{
                 ~"error_context" => ~"schema_violation",
                 ~"error_type" => ~"wrong_type",
-                ~"path" => ~"/name"
+                ~"pointer" => ~"/name"
             },
             #{
                 ~"error_context" => ~"schema_violation",
                 ~"error_type" => ~"no_extra_properties_allowed",
-                ~"path" => ~"/extra"
+                ~"pointer" => ~"/extra"
             }
         ]),
         lists:sort(Errors)
@@ -146,7 +164,7 @@ render_errors_hides_schema_and_paths(_Config) ->
     ?assertEqual(nomatch, binary:match(Body, [~"file:", ~"$id", ~"$schema", ~"field_info"])),
     ?assertEqual(nomatch, binary:match(Body, ~"properties")),
     [
-        ?assertEqual([], maps:keys(Error) -- [~"error_context", ~"error_type", ~"path", ~"property"])
+        ?assertEqual([], maps:keys(Error) -- [~"error_context", ~"error_type", ~"pointer", ~"property"])
      || Error <- decode_errors(Body)
     ].
 
@@ -157,7 +175,7 @@ render_errors_uses_json_pointer_paths(_Config) ->
         ~"tags" => [~"ok", 1],
         ~"a/b~c" => ~"x"
     }),
-    Paths = lists:sort([maps:get(~"path", Error) || Error <- decode_errors(Body)]),
+    Paths = lists:sort([maps:get(~"pointer", Error) || Error <- decode_errors(Body)]),
     ?assertEqual([~"/a~1b~0c", ~"/tags/1"], Paths).
 
 jesse_allowed_errors_can_be_overridden(_Config) ->
@@ -220,6 +238,40 @@ missing_schema_file_is_500(_Config) ->
 route_without_schema_is_untouched(_Config) ->
     {200, _, _} = request(post, "/no_schema", [{"content-type", "text/plain"}], ~"hi").
 
+errors_are_capped_at_max_errors_by_default(_Config) ->
+    {400, _, Body} = post_json("/array", lists:duplicate(10000, 1)),
+    ?assertMatch(#{~"truncated" := true}, json:decode(Body)),
+    ?assertEqual(20, length(decode_errors(Body))).
+
+max_errors_option_sets_the_cap(_Config) ->
+    {400, _, Body} = post_json("/capped/array", lists:duplicate(10, 1)),
+    ?assertMatch(#{~"truncated" := true}, json:decode(Body)),
+    ?assertEqual(3, length(decode_errors(Body))),
+    {400, _, Exact} = post_json("/capped/array", lists:duplicate(3, 1)),
+    ?assertMatch(#{~"truncated" := false}, json:decode(Exact)).
+
+allowed_errors_infinity_reports_every_error(_Config) ->
+    {400, _, Body} = post_json("/all_errors", lists:duplicate(30, 1)),
+    ?assertMatch(#{~"truncated" := false}, json:decode(Body)),
+    ?assertEqual(30, length(decode_errors(Body))).
+
+mixed_case_json_type_is_415(_Config) ->
+    ets:delete_all_objects(?LOG_TABLE),
+    {415, _, _} = request(post, "/tags", [{"content-type", "Application/JSON"}], ~"{}"),
+    ?assertEqual([], logged(error, ~"JSON body was not decoded")).
+
+patch_415_sends_accept_patch(_Config) ->
+    {415, Headers, _} = request(patch, "/tags", [{"content-type", "text/plain"}], ~"{}"),
+    ?assertEqual(~"application/json", header(~"accept-patch", Headers)).
+
+binary_schema_key_is_validated(_Config) ->
+    {400, _, Body} = post_json("/binary_key", #{~"name" => ~"erlang"}),
+    ?assertMatch([#{~"property" := ~"slug"}], decode_errors(Body)),
+    {200, _, _} = post_json("/binary_key", #{~"name" => ~"erlang", ~"slug" => ~"erlang"}).
+
+schema_without_draft_does_not_warn(Config) ->
+    ?assertEqual([], [W || #{schema := "schemas/strings.json"} = W <- ?config(load_warnings, Config)]).
+
 log(#{level := Level, msg := {report, #{msg := Msg} = Report}}, _Config) when is_binary(Msg) ->
     ets:insert(?LOG_TABLE, {Level, Msg, Report});
 log(_Event, _Config) ->
@@ -274,7 +326,7 @@ recv_all(Socket, Acc) ->
     end.
 
 decode_errors(Body) ->
-    Errors = json:decode(Body),
+    #{~"errors" := Errors} = json:decode(Body),
     true = is_list(Errors),
     Errors.
 

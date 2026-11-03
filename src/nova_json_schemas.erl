@@ -18,12 +18,8 @@ See the README for the plugin order, the response codes and the error body.
 
 -include_lib("kernel/include/logger.hrl").
 
--define(SUPPORTED_DRAFTS, [
-    ~"http://json-schema.org/draft-03/schema#",
-    ~"http://json-schema.org/draft-04/schema#",
-    ~"http://json-schema.org/draft-06/schema#"
-]).
 -define(BODY_METHODS, [~"POST", ~"PUT", ~"PATCH"]).
+-define(DEFAULT_MAX_ERRORS, 20).
 
 init() ->
     jesse_database:load_all(),
@@ -52,12 +48,11 @@ load_local_schemas() ->
     ok.
 
 -doc """
-Validate the decoded JSON body of a route that sets `json_schema` in its
-`extra_state`.
+Validate the decoded JSON body of a route against the request-body schema
+named by `json_schema` in its `extra_state`.
 
 POST, PUT and PATCH requests must carry a decoded JSON body. Requests with
-other methods are validated only when a decoded body is present, so a
-`json_schema` on a GET route (for example for API docs) is ignored.
+other methods are validated only when a decoded body is present.
 """.
 -spec pre_request(Req :: cowboy_req:req(), Env :: any(), Options :: map(), State :: any()) ->
     {ok, Req0 :: cowboy_req:req(), NewState :: any()}
@@ -68,7 +63,7 @@ pre_request(
     Options,
     State
 ) ->
-    validate_request(SchemaLocation, JSON, Extra, Options, Req, State);
+    validate_request(schema_key(SchemaLocation), JSON, Extra, Options, Req, State);
 pre_request(
     #{extra_state := #{json_schema := SchemaLocation}, method := Method} = Req,
     _Env,
@@ -77,7 +72,7 @@ pre_request(
 ) ->
     case lists:member(Method, ?BODY_METHODS) of
         true ->
-            reject_undecoded_body(SchemaLocation, Req, State);
+            reject_undecoded_body(schema_key(SchemaLocation), Req, State);
         false ->
             {ok, Req, State}
     end;
@@ -101,63 +96,104 @@ post_request(Req, _Env, _Options, State) ->
 plugin_info() ->
     #{
         title => ~"Nova JSON Schema plugin",
-        version => ~"0.2.0",
+        version => version(),
         url => ~"https://github.com/novaframework/nova_json_schemas",
         authors => [~"Niclas Axelsson <niclas@burbas.se>"],
         description => ~"Validates JSON request bodies against JSON schemas using jesse",
         options => [
-            {render_errors, ~"If true, validation errors are returned as JSON to the requester"}
+            {render_errors, ~"If true, validation errors are returned as JSON to the requester"},
+            {max_errors, ~"Most errors reported in the error body (default 20)"}
         ]
     }.
 
-validate_request(SchemaLocation, JSON, Extra, Options, Req, State) ->
-    JesseOpts = maps:get(jesse_options, Extra, []) ++ [{allowed_errors, infinity}],
-    case validate_json(SchemaLocation, JSON, JesseOpts) of
+version() ->
+    case application:get_key(nova_json_schemas, vsn) of
+        {ok, Vsn} -> iolist_to_binary(io_lib:format("~ts", [Vsn]));
+        _ -> ~"unknown"
+    end.
+
+schema_key(SchemaLocation) when is_binary(SchemaLocation) ->
+    binary_to_list(SchemaLocation);
+schema_key(SchemaLocation) ->
+    SchemaLocation.
+
+validate_request(SchemaKey, JSON, Extra, Options, Req, State) ->
+    RouteOpts = maps:get(jesse_options, Extra, []),
+    RenderErrors = maps:get(render_errors, Options, false) =:= true,
+    MaxErrors =
+        case proplists:get_value(allowed_errors, RouteOpts) of
+            infinity -> infinity;
+            _ -> max_errors(Options)
+        end,
+    AllowedErrors =
+        case RenderErrors of
+            true -> MaxErrors;
+            false -> 0
+        end,
+    case validate_json(SchemaKey, JSON, RouteOpts ++ [{allowed_errors, AllowedErrors}]) of
         ok ->
             {ok, Req, State};
         {invalid, Errors} ->
-            ?LOG_DEBUG(#{msg => ~"JSON body failed schema validation", schema => SchemaLocation}),
-            reply_invalid(Errors, maps:get(render_errors, Options, false), Req, State);
+            ?LOG_DEBUG(#{msg => ~"JSON body failed schema validation", schema => SchemaKey}),
+            reply_invalid(Errors, RenderErrors, MaxErrors, Req, State);
         {schema_error, Reason} ->
             ?LOG_ERROR(#{
                 msg => ~"JSON schema cannot be used for validation",
-                schema => SchemaLocation,
-                reason => Reason,
-                supported_drafts => ?SUPPORTED_DRAFTS
+                schema => SchemaKey,
+                reason => Reason
             }),
             {stop, cowboy_req:reply(500, Req), State}
     end.
 
-reply_invalid(Errors, true, Req, State) ->
-    Body = json:encode([render_error(Error) || Error <- Errors]),
+max_errors(Options) ->
+    case maps:get(max_errors, Options, ?DEFAULT_MAX_ERRORS) of
+        MaxErrors when is_integer(MaxErrors), MaxErrors > 0 -> MaxErrors;
+        Other -> error({invalid_option, max_errors, Other})
+    end.
+
+reply_invalid(Errors, true, MaxErrors, Req, State) ->
+    {Reported, Truncated} = truncate(Errors, MaxErrors),
+    Body = json:encode(#{
+        errors => [render_error(Error) || Error <- Reported],
+        truncated => Truncated
+    }),
     Req0 = cowboy_req:reply(400, #{~"content-type" => ~"application/json"}, Body, Req),
     {stop, Req0, State};
-reply_invalid(_Errors, _RenderErrors, Req, State) ->
+reply_invalid(_Errors, false, _MaxErrors, Req, State) ->
     {stop, cowboy_req:reply(400, Req), State}.
 
-reject_undecoded_body(SchemaLocation, Req, State) ->
-    case {cowboy_req:has_body(Req), is_json_content_type(Req)} of
+truncate(Errors, MaxErrors) when is_integer(MaxErrors), length(Errors) > MaxErrors ->
+    {lists:sublist(Errors, MaxErrors), true};
+truncate(Errors, _MaxErrors) ->
+    {Errors, false}.
+
+reject_undecoded_body(SchemaKey, Req, State) ->
+    case {cowboy_req:has_body(Req), is_decoded_content_type(Req)} of
         {false, _} ->
             {stop, cowboy_req:reply(400, Req), State};
         {true, false} ->
-            Req0 = cowboy_req:reply(415, #{~"accept" => ~"application/json"}, Req),
+            Req0 = cowboy_req:reply(415, unsupported_media_type_headers(Req), Req),
             {stop, Req0, State};
         {true, true} ->
             ?LOG_ERROR(#{
                 msg =>
                     ~"JSON body was not decoded before nova_json_schemas ran. Put {pre_request, nova_request_plugin, #{decode_json_body => true}} before nova_json_schemas in the plugin list",
-                schema => SchemaLocation
+                schema => SchemaKey
             }),
             {stop, cowboy_req:reply(500, Req), State}
     end.
 
-is_json_content_type(Req) ->
-    try cowboy_req:parse_header(~"content-type", Req) of
-        {~"application", ~"json", _Params} -> true;
-        _ -> false
-    catch
-        _:_ -> false
-    end.
+%% Same rule as nova_request_plugin's decode_json_body clause, so a type it
+%% does not decode is a 415 here and not a misdiagnosed plugin order.
+is_decoded_content_type(#{headers := #{~"content-type" := <<"application/json", _/binary>>}}) ->
+    true;
+is_decoded_content_type(_Req) ->
+    false.
+
+unsupported_media_type_headers(#{method := ~"PATCH"}) ->
+    #{~"accept" => ~"application/json", ~"accept-patch" => ~"application/json"};
+unsupported_media_type_headers(_Req) ->
+    #{~"accept" => ~"application/json"}.
 
 validate_json(SchemaLocation, JSON, JesseOpts) ->
     case jesse:validate(SchemaLocation, JSON, JesseOpts) of
@@ -221,28 +257,25 @@ add_schema(Key, FileContent) ->
             {error, {json_decode, Reason}}
     end.
 
-warn_if_unsupported_draft(Key, #{~"$schema" := Draft}) ->
-    case lists:member(Draft, ?SUPPORTED_DRAFTS) of
-        true ->
-            ok;
-        false ->
+warn_if_unsupported_draft(Key, Schema) ->
+    case jesse:validate_with_schema(maps:with([~"$schema"], Schema), null) of
+        {error, [{schema_invalid, _, {schema_unsupported, Draft}}]} ->
             ?LOG_WARNING(#{
                 msg =>
                     ~"JSON schema declares a $schema that jesse cannot validate; requests on routes using it get a 500",
                 schema => Key,
-                '$schema' => Draft,
-                supported_drafts => ?SUPPORTED_DRAFTS
-            })
-    end;
-warn_if_unsupported_draft(_Key, _Schema) ->
-    ok.
+                '$schema' => Draft
+            });
+        _ ->
+            ok
+    end.
 
 render_error({data_invalid, _Schema, Info, Value, Path}) ->
     maps:merge(
         #{
             error_context => schema_violation,
             error_type => error_type(Info),
-            path => json_pointer(Path)
+            pointer => json_pointer(Path)
         },
         error_detail(Info, Value)
     ).

@@ -26,8 +26,26 @@ routes(_Environment) ->
                         jesse_options => [{allowed_errors, 0}]
                     }
                 }},
-                {"/no_schema", fun schema_app_controller:handle/1, #{methods => ?ALL_METHODS}}
+                {"/no_schema", fun schema_app_controller:handle/1, #{methods => ?ALL_METHODS}},
+                route("/binary_key", ~"schemas/tag.json"),
+                route("/array", "schemas/strings.json"),
+                {"/all_errors", fun schema_app_controller:handle/1, #{
+                    methods => [post],
+                    extra_state => #{
+                        json_schema => "schemas/strings.json",
+                        jesse_options => [{allowed_errors, infinity}]
+                    }
+                }}
             ]
+        },
+        #{
+            prefix => "/capped",
+            security => false,
+            plugins => [
+                {pre_request, nova_request_plugin, #{decode_json_body => true}},
+                {pre_request, nova_json_schemas, #{render_errors => true, max_errors => 3}}
+            ],
+            routes => [route("/array", "schemas/strings.json")]
         },
         #{
             prefix => "/plain",
