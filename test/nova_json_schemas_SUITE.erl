@@ -40,6 +40,7 @@
     huge_integer_is_400_under_draft6/1,
     huge_integer_is_400_under_draft4/1,
     other_methods_with_undecoded_json_body_are_500/1,
+    only_exact_json_type_counts_as_undecoded/1,
     schema_path_outside_priv_is_500/1
 ]).
 
@@ -82,6 +83,7 @@ all() ->
         huge_integer_is_400_under_draft6,
         huge_integer_is_400_under_draft4,
         other_methods_with_undecoded_json_body_are_500,
+        only_exact_json_type_counts_as_undecoded,
         schema_path_outside_priv_is_500
     ].
 
@@ -344,7 +346,8 @@ route_allowed_errors_is_ignored_without_render_errors(_Config) ->
 
 mixed_case_json_type_is_415(_Config) ->
     ets:delete_all_objects(?LOG_TABLE),
-    {415, _, _} = request(post, "/tags", [{"content-type", "Application/JSON"}], ~"{}"),
+    {Status, _, _} = request(post, "/tags", [{"content-type", "Application/JSON"}], ~"{}"),
+    ?assert(lists:member(Status, [415, 400]), Status),
     ?assertEqual([], logged(error, ~"JSON body was not decoded")).
 
 patch_415_sends_accept_patch(_Config) ->
@@ -459,6 +462,24 @@ other_methods_with_undecoded_json_body_are_500(_Config) ->
     {200, _, _} = request(options, "/unordered/any", [], <<>>),
     {200, _, _} = request(get, "/unordered/any", [{"content-type", "application/json"}], ~"{}"),
     {400, _, _} = request(options, "/any", [{"content-type", "application/json"}], ~"{}").
+
+only_exact_json_type_counts_as_undecoded(_Config) ->
+    ets:delete_all_objects(?LOG_TABLE),
+    {415, _, _} = request(
+        post, "/unordered/tags", [{"content-type", "application/json-seq"}], ~"{}"
+    ),
+    {415, _, _} = request(
+        patch, "/unordered/tags", [{"content-type", "application/json-patch+json"}], ~"[]"
+    ),
+    {415, _, _} = request(post, "/unordered/tags", [{"content-type", "application/json;"}], ~"{}"),
+    {200, _, _} = request(
+        options, "/unordered/any", [{"content-type", "application/json-seq"}], ~"{}"
+    ),
+    ?assertEqual([], logged(error, ~"JSON body was not decoded")),
+    {500, _, _} = request(
+        post, "/unordered/tags", [{"content-type", "application/json; charset=utf-8"}], ~"{}"
+    ),
+    ?assertMatch([_], logged(error, ~"JSON body was not decoded")).
 
 schema_path_outside_priv_is_500(_Config) ->
     [

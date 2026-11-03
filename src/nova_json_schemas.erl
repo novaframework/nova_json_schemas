@@ -193,10 +193,17 @@ reject_undecoded_body(SchemaKey, #{method := Method} = Req, State) ->
             {ok, Req, State}
     end.
 
-%% Same rule as nova_request_plugin's decode_json_body clause, so a type it
-%% does not decode is a 415 here and not a misdiagnosed plugin order.
-is_decoded_content_type(#{headers := #{~"content-type" := <<"application/json", _/binary>>}}) ->
-    true;
+%% A type that every nova_request_plugin in the supported range decodes:
+%% 0.18 matches the lowercase application/json prefix, later versions parse
+%% the header and need exactly application/json. Any other type is a 415
+%% here and not a misdiagnosed plugin order.
+is_decoded_content_type(#{headers := #{~"content-type" := <<"application/json", _/binary>>}} = Req) ->
+    try cowboy_req:parse_header(~"content-type", Req) of
+        {~"application", ~"json", _Params} -> true;
+        _ -> false
+    catch
+        _:_ -> false
+    end;
 is_decoded_content_type(_Req) ->
     false.
 

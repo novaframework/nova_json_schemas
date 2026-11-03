@@ -4,8 +4,11 @@ Nova plugin that validates JSON request bodies against JSON schemas, using
 [jesse](https://github.com/for-GET/jesse).
 
 Requires OTP 27 or later (schema files are read with the OTP `json` module)
-and Nova 0.18 or later. The `415` and `500` answers below mirror the rules of
-Nova 0.18's `nova_request_plugin` for which bodies it decodes.
+and Nova 0.18 or later. The `415` and `500` answers below follow a rule
+that holds for every `nova_request_plugin` in that range: a body counts as
+JSON only when its `content-type` starts with lowercase `application/json`
+and parses as exactly `application/json` (parameters such as
+`charset=utf-8` are allowed).
 
 ## Usage
 
@@ -95,7 +98,10 @@ wherever a body is decoded:
 - Any other method (`OPTIONS`, `HEAD`, a custom method) with an
   `application/json` body that was not decoded gets a `500`, the same as
   `POST`, since `nova_request_plugin` would have decoded it. This catches a
-  wrong plugin order on every method.
+  wrong plugin order on every method. Other types, such as
+  `application/json-seq` or `application/json-patch+json`, are not JSON by
+  this rule: they pass through on these methods and get a `415` on `POST`,
+  `PUT` and `PATCH`.
 - Routes without `json_schema` are not touched.
 
 See [ADR 0001](docs/adr/0001-json-schema-route-key.md).
@@ -107,9 +113,9 @@ See [ADR 0001](docs/adr/0001-json-schema-route-key.md).
 | Body is valid | request continues to the controller |
 | Body fails the schema | `400`, with an error body if `render_errors => true` |
 | No body (`POST`/`PUT`/`PATCH`) | `400` |
-| Body is not JSON (form, `text/plain`, no `content-type`) | `415`, with `accept: application/json` (and `accept-patch: application/json` on `PATCH`) |
+| Body is not JSON (form, `text/plain`, `application/json-seq`, mixed-case `Application/JSON`, no `content-type`) | `415`, with `accept: application/json` (and `accept-patch: application/json` on `PATCH`). A Nova newer than 0.18 may decode a mixed-case type, and then validates it as usual |
 | JSON body that is empty or malformed | `400` (sent by `nova_request_plugin`) |
-| JSON body not decoded, `nova_request_plugin` missing or after this plugin (any method except `GET` and `DELETE`) | `500`, and an error in the log |
+| `application/json` body not decoded, `nova_request_plugin` missing or after this plugin (any method except `GET` and `DELETE`) | `500`, and an error in the log |
 | Schema missing, unreadable, outside `priv`, of an unsupported draft, or with a `$ref` that is not loaded | `500`, and an error in the log |
 
 These follow RFC 9110: `415 Unsupported Media Type` when the content is in a
