@@ -466,7 +466,16 @@ only_json_types_count_as_undecoded(_Config) ->
         post, "/unordered/tags", [{"content-type", "application/json-seq"}], ~"{}"
     ),
     {415, _, _} = request(post, "/unordered/tags", [{"content-type", "application/json;"}], ~"{}"),
-    {415, _, _} = request(post, "/unordered/tags", [{"content-type", "text/json"}], ~"{}"),
+    [
+        {415, _, _} = request(post, "/unordered/tags", [{"content-type", Type}], ~"{}")
+     || Type <- [
+            "text/json",
+            "application/+json",
+            "text/x+json",
+            "application/x+json+xml",
+            "application/xml"
+        ]
+    ],
     {200, _, _} = request(
         options, "/unordered/any", [{"content-type", "application/json-seq"}], ~"{}"
     ),

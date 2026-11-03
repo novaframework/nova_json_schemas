@@ -53,7 +53,7 @@ routes(_Environment) ->
                 {pre_request, nova_request_plugin, #{decode_json_body => true}},
                 {pre_request, nova_json_schemas, #{render_errors => true}}
             ],
-            routes => [route_with_errors("/tags", "schemas/tag.json", infinity)]
+            routes => [route_with_errors("/tags", "schemas/tag.json", 10)]
         },
         #{
             prefix => "/plain",
