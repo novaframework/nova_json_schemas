@@ -130,7 +130,7 @@ missing its content or the content is invalid.
 With `render_errors => true`, a body that fails validation gets a `400` with
 `content-type: application/json` and a JSON array with one object per error.
 jesse stops at the first error unless the route sets `allowed_errors` in its
-`jesse_options` (see [Options](#options)). With `{allowed_errors, infinity}`:
+`jesse_options` (see [Options](#options)). With `{allowed_errors, 10}`:
 
 ```json
 [
@@ -181,16 +181,24 @@ Route options, in `extra_state`:
 
 With `render_errors => true` the route's `jesse_options` go to jesse as
 they are, so `allowed_errors` sets how many errors jesse collects: the
-default `0` stops at the first error, `{allowed_errors, N}` stops after
-`N + 1` errors and `infinity` collects them all. Without `render_errors` the
-`400` has no body, so jesse always stops at the first error. See the jesse
-documentation for the other options.
+default `0` stops at the first error and `{allowed_errors, N}` stops after
+`N + 1` errors. Without `render_errors` the `400` has no body, so jesse
+always stops at the first error. See the jesse documentation for the other
+options.
 
-An `allowed_errors` above 0 makes jesse keep validating after the first
-error. With jesse 1.8.x that has a cost: `uniqueItems` compares every pair of
-items, so on a large array it is quadratic in the array length, and a
-`maxItems` error no longer stops validation before it runs. Keep the default,
-or bound the request body size, on routes whose schema uses `uniqueItems`.
+Keep `N` small and finite, such as 10. The client controls how many errors a
+body has, and with jesse 1.8.x collecting errors costs CPU time that grows
+with the square of the error count, while the error body grows linearly with
+it: 40 000 errors take about 4 s, and a 1 MB body can produce about 500 000
+errors and an error body of about 39 MB. Any atom compares greater than an
+integer in jesse's check, so `infinity`, and also a misspelt atom such as
+`infnity`, means no limit.
+
+An `allowed_errors` above 0 also lets validation continue past an error that
+would otherwise end it. `uniqueItems` compares every pair of items, so on a
+large array it is quadratic in the array length, and a `maxItems` error no
+longer stops validation before it runs. Keep the default, or bound the
+request body size, on routes whose schema uses `uniqueItems`.
 
 ## Regular expressions
 
