@@ -138,7 +138,11 @@ init_per_suite(Config) ->
     ok = application:load(schema_app),
     ok = application:set_env(schema_app, outside_schema, OutsideSchema),
 
-    Owner = spawn(fun() -> receive stop -> ok end end),
+    Owner = spawn(fun() ->
+        receive
+            stop -> ok
+        end
+    end),
     ?LOG_TABLE = ets:new(?LOG_TABLE, [named_table, public, bag, {heir, Owner, none}]),
     ok = logger:add_handler(?MODULE, ?MODULE, #{level => all}),
 
@@ -155,7 +159,12 @@ init_per_suite(Config) ->
         ~"type" => ~"object",
         ~"required" => [~"id"]
     }),
-    [{log_owner, Owner}, {app_dir, AppDir}, {load_warnings, logged(warning, ~"jesse cannot validate")} | Config].
+    [
+        {log_owner, Owner},
+        {app_dir, AppDir},
+        {load_warnings, logged(warning, ~"jesse cannot validate")}
+        | Config
+    ].
 
 end_per_suite(Config) ->
     application:stop(nova),
@@ -225,7 +234,9 @@ render_errors_hides_schema_and_paths(_Config) ->
     ?assertEqual(nomatch, binary:match(Body, [~"file:", ~"$id", ~"$schema", ~"field_info"])),
     ?assertEqual(nomatch, binary:match(Body, ~"properties")),
     [
-        ?assertEqual([], maps:keys(Error) -- [~"error_context", ~"error_type", ~"pointer", ~"property"])
+        ?assertEqual(
+            [], maps:keys(Error) -- [~"error_context", ~"error_type", ~"pointer", ~"property"]
+        )
      || Error <- decode_errors(Body)
     ].
 
@@ -346,7 +357,10 @@ binary_schema_key_is_validated(_Config) ->
     {200, _, _} = post_json("/binary_key", #{~"name" => ~"erlang", ~"slug" => ~"erlang"}).
 
 schema_without_draft_does_not_warn(Config) ->
-    ?assertEqual([], [W || #{schema := "schemas/strings.json"} = W <- ?config(load_warnings, Config)]).
+    ?assertEqual([], [
+        W
+     || #{schema := "schemas/strings.json"} = W <- ?config(load_warnings, Config)
+    ]).
 
 unique_items_on_a_huge_array_fails_fast(_Config) ->
     {Millis, {400, _, Body}} = timed_post("/unique", huge_duplicate_ids()),
@@ -377,10 +391,11 @@ refs_are_not_fetched_over_the_network(Config) ->
     }),
     ets:delete_all_objects(?LOG_TABLE),
     {Status, _, _} = post_json("/remote", #{~"a" => 1}),
-    Fetches = receive
-        {fetch, Request} -> [Request]
-    after 500 -> []
-    end,
+    Fetches =
+        receive
+            {fetch, Request} -> [Request]
+        after 500 -> []
+        end,
     unlink(Acceptor),
     exit(Acceptor, kill),
     ok = gen_tcp:close(Listen),
@@ -425,7 +440,9 @@ assert_huge_integer_is_400(Path) ->
     ),
     ?assertEqual([], ets:lookup(?LOG_TABLE, error)),
     {400, _, Small} = post_json(Path, #{~"n" => 3}),
-    ?assertMatch([#{~"error_type" := ~"not_multiple_of", ~"pointer" := ~"/n"}], decode_errors(Small)),
+    ?assertMatch(
+        [#{~"error_type" := ~"not_multiple_of", ~"pointer" := ~"/n"}], decode_errors(Small)
+    ),
     {200, _, _} = post_json(Path, #{~"n" => 4}).
 
 other_methods_with_undecoded_json_body_are_500(_Config) ->
@@ -498,7 +515,9 @@ write_schema(Path, Schema) ->
     ok = file:write_file(Path, json:encode(Schema)).
 
 post_json(Path, Body) ->
-    request(post, Path, [{"content-type", "application/json"}], iolist_to_binary(json:encode(Body))).
+    request(
+        post, Path, [{"content-type", "application/json"}], iolist_to_binary(json:encode(Body))
+    ).
 
 request(Method, Path, Headers, Body) ->
     {ok, Socket} = gen_tcp:connect("127.0.0.1", ?PORT, [binary, {active, false}]),
