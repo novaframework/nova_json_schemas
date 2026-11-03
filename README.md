@@ -45,7 +45,8 @@ decodes the body into the `json` key that this plugin validates.
 
 Put the schema in `priv/schemas/tag.json` of your main Nova application
 (the `bootstrap_application`). `json_schema` is a path relative to that
-`priv` directory, written as a string (`"schemas/tag.json"`). Every `*.json`
+`priv` directory, written as a string (`"schemas/tag.json"`) or a binary
+(`~"schemas/tag.json"`). Every `*.json`
 file under `priv/schemas/` is loaded when the plugin starts; other paths
 under `priv` are loaded on first use.
 
@@ -58,8 +59,9 @@ one of these exact values:
 - `http://json-schema.org/draft-04/schema#`
 - `http://json-schema.org/draft-06/schema#`
 
-A schema without `$schema` is validated as draft-06. Draft-07 and later are
-not supported. Such a schema logs a warning when it is loaded, and every
+A schema without `$schema` is validated as draft-06, so any draft-07 or later
+keyword in it (`if`/`then`/`else`, for example) is silently ignored. Always
+declare `$schema`. Draft-07 and later are not supported. Such a schema logs a warning when it is loaded, and every
 request to a route that uses it gets a `500` (with an error in the log), since
 it is a server configuration problem and not a client error. A draft-07
 schema that does not use `if`/`then`/`else` usually works as draft-06 once its
@@ -67,13 +69,17 @@ schema that does not use `if`/`then`/`else` usually works as draft-06 once its
 
 ## Which requests are validated
 
+`json_schema` names the schema of the **request body**. It is enforced
+wherever a body is decoded:
+
 - `POST`, `PUT` and `PATCH` requests to a route with `json_schema` must carry
   a JSON body.
 - Requests with any other method are validated only if a decoded body is
-  present (`nova_request_plugin` never decodes `GET` or `DELETE` bodies), so
-  `json_schema` on a `GET` route, for example to document a response for an
-  OpenAPI generator, does not reject the request.
+  present. `nova_request_plugin` never decodes `GET` or `DELETE` bodies, so
+  on those methods `json_schema` is not enforced.
 - Routes without `json_schema` are not touched.
+
+See [ADR 0001](docs/adr/0001-json-schema-route-key.md).
 
 ## Responses
 
@@ -82,7 +88,7 @@ schema that does not use `if`/`then`/`else` usually works as draft-06 once its
 | Body is valid | request continues to the controller |
 | Body fails the schema | `400`, with an error body if `render_errors => true` |
 | No body (`POST`/`PUT`/`PATCH`) | `400` |
-| Body is not JSON (form, `text/plain`, no `content-type`) | `415`, with `accept: application/json` |
+| Body is not JSON (form, `text/plain`, no `content-type`) | `415`, with `accept: application/json` (and `accept-patch: application/json` on `PATCH`) |
 | JSON body that is empty or malformed | `400` (sent by `nova_request_plugin`) |
 | JSON body not decoded, `nova_request_plugin` missing or after this plugin | `500`, and an error in the log |
 | Schema missing, unreadable or of an unsupported draft | `500`, and an error in the log |
@@ -94,26 +100,31 @@ missing its content or the content is invalid.
 ## Error body
 
 With `render_errors => true`, a body that fails validation gets a `400` with
-`content-type: application/json` and a JSON array holding one object per
-error. Every error is reported, not only the first:
+`content-type: application/json` and a JSON object. `errors` holds one object
+per error, up to `max_errors` (default 20). `truncated` is `true` when more
+errors were found than are listed:
 
 ```json
-[
-  {"error_context": "schema_violation", "error_type": "missing_required_property", "path": "", "property": "slug"},
-  {"error_context": "schema_violation", "error_type": "wrong_type", "path": "/name"}
-]
+{
+  "errors": [
+    {"error_context": "schema_violation", "error_type": "missing_required_property", "pointer": "", "property": "slug"},
+    {"error_context": "schema_violation", "error_type": "wrong_type", "pointer": "/name"}
+  ],
+  "truncated": false
+}
 ```
 
 | Key | Always | Meaning |
 | --- | --- | --- |
 | `error_context` | yes | always `"schema_violation"` |
 | `error_type` | yes | the jesse error, for example `wrong_type`, `missing_required_property`, `no_extra_properties_allowed`, `not_in_enum`, `wrong_length`, `not_in_range` |
-| `path` | yes | JSON Pointer (RFC 6901) to the value that failed; `""` is the whole body |
+| `pointer` | yes | JSON Pointer (RFC 6901) to the value that failed; `""` is the whole body |
 | `property` | no | the missing property, for `missing_required_property` and `missing_dependency` |
 
 The body never contains the schema, its `$id` or a server path.
 
-Without `render_errors` (the default) the `400` has no body.
+Without `render_errors` (the default) the `400` has no body, and jesse stops at
+the first error.
 
 ## Options
 
@@ -122,6 +133,7 @@ Plugin options, in the plugin's options map:
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `render_errors` | `false` | send the error body described above |
+| `max_errors` | `20` | most errors listed in the error body, a positive integer |
 
 Route options, in `extra_state`:
 
@@ -139,9 +151,12 @@ Route options, in `extra_state`:
 }}
 ```
 
-The plugin passes `{allowed_errors, infinity}` so that every error is
-reported. To stop at the first error, set `{allowed_errors, 0}` in
-`jesse_options`. See the jesse documentation for the other options.
+The plugin sets jesse's `allowed_errors` from `max_errors`, so validation
+stops once it has found more errors than it will list. A route can set
+`{allowed_errors, infinity}` in `jesse_options` to collect and list every
+error, which for a large body can make the response much larger than the
+request. `{allowed_errors, 0}` stops at the first error. See the jesse
+documentation for the other options.
 
 ## License
 
