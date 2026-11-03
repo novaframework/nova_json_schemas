@@ -4,7 +4,8 @@ Nova plugin that validates JSON request bodies against JSON schemas, using
 [jesse](https://github.com/for-GET/jesse).
 
 Requires OTP 27 or later (schema files are read with the OTP `json` module)
-and Nova 0.13 or later.
+and Nova 0.18 or later. The `415` and `500` answers below mirror the rules of
+Nova 0.18's `nova_request_plugin` for which bodies it decodes.
 
 ## Usage
 
