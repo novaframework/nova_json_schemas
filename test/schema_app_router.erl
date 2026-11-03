@@ -29,14 +29,29 @@ routes(_Environment) ->
                 {"/no_schema", fun schema_app_controller:handle/1, #{methods => ?ALL_METHODS}},
                 route("/binary_key", ~"schemas/tag.json"),
                 route("/array", "schemas/strings.json"),
-                {"/all_errors", fun schema_app_controller:handle/1, #{
-                    methods => [post],
-                    extra_state => #{
-                        json_schema => "schemas/strings.json",
-                        jesse_options => [{allowed_errors, infinity}]
-                    }
-                }}
+                route_with_errors("/all_errors", "schemas/strings.json", infinity),
+                route("/unique", "schemas/unique.json"),
+                route("/keyed", "schemas/keyed.json"),
+                route("/multiple_of_6", "schemas/multiple_of_6.json"),
+                route("/multiple_of_4", "schemas/multiple_of_4.json"),
+                route("/broken_multiple_of", "schemas/broken_multiple_of.json"),
+                route("/refs/relative", "schemas/refs/relative.json"),
+                route("/refs/by_id", "schemas/refs/by_id.json"),
+                route("/remote", "remote/root.json"),
+                any_method_route("/any", "schemas/tag.json"),
+                route("/outside/absolute", outside_schema()),
+                route("/outside/parent", "../outside.json"),
+                route("/outside/nested_parent", "schemas/../../outside.json")
             ]
+        },
+        #{
+            prefix => "/collect",
+            security => false,
+            plugins => [
+                {pre_request, nova_request_plugin, #{decode_json_body => true}},
+                {pre_request, nova_json_schemas, #{render_errors => true, max_errors => 20}}
+            ],
+            routes => [route("/tags", "schemas/tag.json")]
         },
         #{
             prefix => "/capped",
@@ -45,7 +60,11 @@ routes(_Environment) ->
                 {pre_request, nova_request_plugin, #{decode_json_body => true}},
                 {pre_request, nova_json_schemas, #{render_errors => true, max_errors => 3}}
             ],
-            routes => [route("/array", "schemas/strings.json")]
+            routes => [
+                route("/array", "schemas/strings.json"),
+                route_with_errors("/all_errors", "schemas/strings.json", infinity),
+                route_with_errors("/first_error", "schemas/strings.json", 0)
+            ]
         },
         #{
             prefix => "/plain",
@@ -54,7 +73,10 @@ routes(_Environment) ->
                 {pre_request, nova_request_plugin, #{decode_json_body => true}},
                 {pre_request, nova_json_schemas, #{}}
             ],
-            routes => [route("/tags", "schemas/tag.json")]
+            routes => [
+                route("/tags", "schemas/tag.json"),
+                route_with_errors("/unique_all_errors", "schemas/unique.json", infinity)
+            ]
         },
         #{
             prefix => "/unordered",
@@ -63,7 +85,10 @@ routes(_Environment) ->
                 {pre_request, nova_json_schemas, #{}},
                 {pre_request, nova_request_plugin, #{decode_json_body => true}}
             ],
-            routes => [route("/tags", "schemas/tag.json")]
+            routes => [
+                route("/tags", "schemas/tag.json"),
+                any_method_route("/any", "schemas/tag.json")
+            ]
         }
     ].
 
@@ -71,3 +96,16 @@ route(Path, Schema) ->
     {Path, fun schema_app_controller:handle/1, #{
         methods => ?ALL_METHODS, extra_state => #{json_schema => Schema}
     }}.
+
+route_with_errors(Path, Schema, AllowedErrors) ->
+    {Path, fun schema_app_controller:handle/1, #{
+        methods => [post],
+        extra_state => #{json_schema => Schema, jesse_options => [{allowed_errors, AllowedErrors}]}
+    }}.
+
+any_method_route(Path, Schema) ->
+    {Path, fun schema_app_controller:handle/1, #{extra_state => #{json_schema => Schema}}}.
+
+outside_schema() ->
+    {ok, Path} = application:get_env(schema_app, outside_schema),
+    Path.

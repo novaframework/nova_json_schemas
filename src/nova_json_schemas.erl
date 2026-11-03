@@ -19,7 +19,9 @@ See the README for the plugin order, the response codes and the error body.
 -include_lib("kernel/include/logger.hrl").
 
 -define(BODY_METHODS, [~"POST", ~"PUT", ~"PATCH"]).
--define(DEFAULT_MAX_ERRORS, 20).
+-define(UNDECODED_METHODS, [~"GET", ~"DELETE"]).
+-define(DEFAULT_MAX_ERRORS, 1).
+-define(MAX_POINTER_BYTES, 256).
 
 init() ->
     jesse_database:load_all(),
@@ -52,7 +54,8 @@ Validate the decoded JSON body of a route against the request-body schema
 named by `json_schema` in its `extra_state`.
 
 POST, PUT and PATCH requests must carry a decoded JSON body. Requests with
-other methods are validated only when a decoded body is present.
+other methods are validated only when a decoded body is present. A JSON body
+that `nova_request_plugin` would have decoded but did not is a `500`.
 """.
 -spec pre_request(Req :: cowboy_req:req(), Env :: any(), Options :: map(), State :: any()) ->
     {ok, Req0 :: cowboy_req:req(), NewState :: any()}
@@ -70,11 +73,9 @@ pre_request(
     _Options,
     State
 ) ->
-    case lists:member(Method, ?BODY_METHODS) of
-        true ->
-            reject_undecoded_body(schema_key(SchemaLocation), Req, State);
-        false ->
-            {ok, Req, State}
+    case lists:member(Method, ?UNDECODED_METHODS) of
+        true -> {ok, Req, State};
+        false -> reject_undecoded_body(schema_key(SchemaLocation), Req, State)
     end;
 pre_request(Req, _Env, _Options, State) ->
     {ok, Req, State}.
@@ -102,7 +103,7 @@ plugin_info() ->
         description => ~"Validates JSON request bodies against JSON schemas using jesse",
         options => [
             {render_errors, ~"If true, validation errors are returned as JSON to the requester"},
-            {max_errors, ~"Most errors reported in the error body (default 20)"}
+            {max_errors, ~"Most errors reported in the error body (default 1)"}
         ]
     }.
 
@@ -120,22 +121,16 @@ schema_key(SchemaLocation) ->
 validate_request(SchemaKey, JSON, Extra, Options, Req, State) ->
     RouteOpts = maps:get(jesse_options, Extra, []),
     RenderErrors = maps:get(render_errors, Options, false) =:= true,
-    MaxErrors =
-        case proplists:get_value(allowed_errors, RouteOpts) of
-            infinity -> infinity;
-            _ -> max_errors(Options)
-        end,
-    AllowedErrors =
-        case RenderErrors of
-            true -> MaxErrors;
-            false -> 0
-        end,
-    case validate_json(SchemaKey, JSON, RouteOpts ++ [{allowed_errors, AllowedErrors}]) of
+    AllowedErrors = allowed_errors(RenderErrors, Options, RouteOpts),
+    JesseOpts =
+        [{allowed_errors, AllowedErrors} | proplists:delete(allowed_errors, RouteOpts)] ++
+            [{schema_loader_fun, fun jesse_database:load/1}],
+    case validate_json(SchemaKey, JSON, JesseOpts) of
         ok ->
             {ok, Req, State};
         {invalid, Errors} ->
             ?LOG_DEBUG(#{msg => ~"JSON body failed schema validation", schema => SchemaKey}),
-            reply_invalid(Errors, RenderErrors, MaxErrors, Req, State);
+            reply_invalid(Errors, RenderErrors, AllowedErrors + 1, Req, State);
         {schema_error, Reason} ->
             ?LOG_ERROR(#{
                 msg => ~"JSON schema cannot be used for validation",
@@ -145,42 +140,57 @@ validate_request(SchemaKey, JSON, Extra, Options, Req, State) ->
             {stop, cowboy_req:reply(500, Req), State}
     end.
 
+%% jesse stops at error AllowedErrors + 1, so a route value can only lower
+%% the plugin's cap.
+allowed_errors(false, _Options, _RouteOpts) ->
+    0;
+allowed_errors(true, Options, RouteOpts) ->
+    PluginAllowed = max_errors(Options) - 1,
+    case proplists:get_value(allowed_errors, RouteOpts) of
+        RouteAllowed when is_integer(RouteAllowed), RouteAllowed >= 0 ->
+            min(RouteAllowed, PluginAllowed);
+        _ ->
+            PluginAllowed
+    end.
+
 max_errors(Options) ->
     case maps:get(max_errors, Options, ?DEFAULT_MAX_ERRORS) of
         MaxErrors when is_integer(MaxErrors), MaxErrors > 0 -> MaxErrors;
         Other -> error({invalid_option, max_errors, Other})
     end.
 
-reply_invalid(Errors, true, MaxErrors, Req, State) ->
-    {Reported, Truncated} = truncate(Errors, MaxErrors),
+reply_invalid(Errors, true, Cap, Req, State) ->
+    {Reported, Truncated} = truncate(Errors, Cap),
     Body = json:encode(#{
         errors => [render_error(Error) || Error <- Reported],
         truncated => Truncated
     }),
     Req0 = cowboy_req:reply(400, #{~"content-type" => ~"application/json"}, Body, Req),
     {stop, Req0, State};
-reply_invalid(_Errors, false, _MaxErrors, Req, State) ->
+reply_invalid(_Errors, false, _Cap, Req, State) ->
     {stop, cowboy_req:reply(400, Req), State}.
 
-truncate(Errors, MaxErrors) when is_integer(MaxErrors), length(Errors) > MaxErrors ->
-    {lists:sublist(Errors, MaxErrors), true};
-truncate(Errors, _MaxErrors) ->
-    {Errors, false}.
+%% Reaching the cap means jesse stopped there, so more errors may exist.
+truncate(Errors, Cap) ->
+    {lists:sublist(Errors, Cap), length(Errors) >= Cap}.
 
-reject_undecoded_body(SchemaKey, Req, State) ->
+reject_undecoded_body(SchemaKey, #{method := Method} = Req, State) ->
+    BodyRequired = lists:member(Method, ?BODY_METHODS),
     case {cowboy_req:has_body(Req), is_decoded_content_type(Req)} of
-        {false, _} ->
-            {stop, cowboy_req:reply(400, Req), State};
-        {true, false} ->
-            Req0 = cowboy_req:reply(415, unsupported_media_type_headers(Req), Req),
-            {stop, Req0, State};
         {true, true} ->
             ?LOG_ERROR(#{
                 msg =>
                     ~"JSON body was not decoded before nova_json_schemas ran. Put {pre_request, nova_request_plugin, #{decode_json_body => true}} before nova_json_schemas in the plugin list",
                 schema => SchemaKey
             }),
-            {stop, cowboy_req:reply(500, Req), State}
+            {stop, cowboy_req:reply(500, Req), State};
+        {false, _} when BodyRequired ->
+            {stop, cowboy_req:reply(400, Req), State};
+        {true, false} when BodyRequired ->
+            Req0 = cowboy_req:reply(415, unsupported_media_type_headers(Req), Req),
+            {stop, Req0, State};
+        _ ->
+            {ok, Req, State}
     end.
 
 %% Same rule as nova_request_plugin's decode_json_body clause, so a type it
@@ -196,11 +206,11 @@ unsupported_media_type_headers(_Req) ->
     #{~"accept" => ~"application/json"}.
 
 validate_json(SchemaLocation, JSON, JesseOpts) ->
-    case jesse:validate(SchemaLocation, JSON, JesseOpts) of
+    case jesse_validate(SchemaLocation, JSON, JesseOpts) of
         {error, {database_error, _, schema_not_found}} ->
             case load_schema_on_demand(SchemaLocation) of
                 ok ->
-                    classify(jesse:validate(SchemaLocation, JSON, JesseOpts));
+                    classify(jesse_validate(SchemaLocation, JSON, JesseOpts));
                 {error, Reason} ->
                     {schema_error, Reason}
             end;
@@ -208,10 +218,22 @@ validate_json(SchemaLocation, JSON, JesseOpts) ->
             classify(Result)
     end.
 
+%% jesse 1.8 divides the instance by multipleOf as floats, so a huge integer
+%% in the body raises badarith under drafts 3 and 4.
+jesse_validate(SchemaLocation, JSON, JesseOpts) ->
+    try
+        jesse:validate(SchemaLocation, JSON, JesseOpts)
+    catch
+        error:badarith -> {error, [number_overflow(#{})]}
+    end.
+
+number_overflow(Schema) ->
+    {data_invalid, Schema, not_multiple_of, null, []}.
+
 classify({ok, _}) ->
     ok;
 classify({error, Errors}) when is_list(Errors) ->
-    case lists:partition(fun is_data_invalid/1, Errors) of
+    case lists:partition(fun is_data_invalid/1, [overflow_as_data(Error) || Error <- Errors]) of
         {DataErrors, []} ->
             {invalid, DataErrors};
         {_, SchemaErrors} ->
@@ -219,6 +241,15 @@ classify({error, Errors}) when is_list(Errors) ->
     end;
 classify({error, Reason}) ->
     {schema_error, Reason}.
+
+%% Under draft 6 the same overflow is reported as a broken schema, although
+%% the schema's multipleOf is valid.
+overflow_as_data({schema_invalid, #{~"multipleOf" := MultipleOf} = Schema, wrong_multiple_of}) when
+    is_number(MultipleOf), MultipleOf > 0
+->
+    number_overflow(Schema);
+overflow_as_data(Error) ->
+    Error.
 
 is_data_invalid({data_invalid, _Schema, _Info, _Value, _Path}) -> true;
 is_data_invalid(_) -> false.
@@ -229,13 +260,20 @@ strip_schema(Error) -> Error.
 load_schema_on_demand(SchemaLocation) ->
     maybe
         {ok, PrivDir} ?= main_priv_dir(),
-        FilePath = filename:join(PrivDir, SchemaLocation),
+        {ok, RelativePath} ?= confine_to_priv(SchemaLocation, PrivDir),
+        FilePath = filename:join(PrivDir, RelativePath),
         {ok, FileContent} ?=
             case file:read_file(FilePath) of
                 {error, Reason} -> {error, {schema_file, FilePath, Reason}};
                 Read -> Read
             end,
         add_schema(SchemaLocation, FileContent)
+    end.
+
+confine_to_priv(SchemaLocation, PrivDir) ->
+    case filelib:safe_relative_path(SchemaLocation, PrivDir) of
+        unsafe -> {error, {schema_path_outside_priv, SchemaLocation}};
+        RelativePath -> {ok, RelativePath}
     end.
 
 main_priv_dir() ->
@@ -288,8 +326,19 @@ error_detail(missing_required_property, Name) when is_binary(Name) -> #{property
 error_detail({missing_dependency, Name}, _Value) when is_binary(Name) -> #{property => Name};
 error_detail(_Info, _Value) -> #{}.
 
+%% Whole segments up to ?MAX_POINTER_BYTES, so a long client key gives a
+%% pointer to an ancestor instead of echoing the key.
 json_pointer(Path) ->
-    iolist_to_binary([[$/, pointer_segment(Segment)] || Segment <- Path]).
+    json_pointer(Path, <<>>).
+
+json_pointer([], Pointer) ->
+    Pointer;
+json_pointer([Segment | Rest], Pointer) ->
+    Next = <<Pointer/binary, $/, (pointer_segment(Segment))/binary>>,
+    case byte_size(Next) > ?MAX_POINTER_BYTES of
+        true -> Pointer;
+        false -> json_pointer(Rest, Next)
+    end.
 
 pointer_segment(Index) when is_integer(Index) ->
     integer_to_binary(Index);

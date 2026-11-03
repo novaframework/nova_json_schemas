@@ -48,7 +48,21 @@ Put the schema in `priv/schemas/tag.json` of your main Nova application
 `priv` directory, written as a string (`"schemas/tag.json"`) or a binary
 (`~"schemas/tag.json"`). Every `*.json`
 file under `priv/schemas/` is loaded when the plugin starts; other paths
-under `priv` are loaded on first use.
+under `priv` are loaded on first use. A path that leads outside `priv` (an
+absolute path, or one that climbs out with `..`) is not read: requests to
+that route get a `500` and the log names `schema_path_outside_priv`.
+
+## `$ref`
+
+A `$ref` resolves only against schemas that are already loaded: everything
+under `priv/schemas/`, plus schemas loaded on first use. Relative refs
+(`"item.json"`, `"../common/id.json"`) resolve against the referring
+schema's path or its `$id`. The plugin never fetches a ref over `http(s)` or
+reads it from the working directory, even when a schema's `$id` is an
+`http` URI. A ref that is not loaded makes the route answer `500`.
+
+A route can choose another loader with `{schema_loader_fun, Fun}` in its
+`jesse_options`; that replaces this rule for the route.
 
 ## Supported schema drafts
 
@@ -77,6 +91,10 @@ wherever a body is decoded:
 - Requests with any other method are validated only if a decoded body is
   present. `nova_request_plugin` never decodes `GET` or `DELETE` bodies, so
   on those methods `json_schema` is not enforced.
+- Any other method (`OPTIONS`, `HEAD`, a custom method) with an
+  `application/json` body that was not decoded gets a `500`, the same as
+  `POST`, since `nova_request_plugin` would have decoded it. This catches a
+  wrong plugin order on every method.
 - Routes without `json_schema` are not touched.
 
 See [ADR 0001](docs/adr/0001-json-schema-route-key.md).
@@ -90,8 +108,8 @@ See [ADR 0001](docs/adr/0001-json-schema-route-key.md).
 | No body (`POST`/`PUT`/`PATCH`) | `400` |
 | Body is not JSON (form, `text/plain`, no `content-type`) | `415`, with `accept: application/json` (and `accept-patch: application/json` on `PATCH`) |
 | JSON body that is empty or malformed | `400` (sent by `nova_request_plugin`) |
-| JSON body not decoded, `nova_request_plugin` missing or after this plugin | `500`, and an error in the log |
-| Schema missing, unreadable or of an unsupported draft | `500`, and an error in the log |
+| JSON body not decoded, `nova_request_plugin` missing or after this plugin (any method except `GET` and `DELETE`) | `500`, and an error in the log |
+| Schema missing, unreadable, outside `priv`, of an unsupported draft, or with a `$ref` that is not loaded | `500`, and an error in the log |
 
 These follow RFC 9110: `415 Unsupported Media Type` when the content is in a
 format the route does not accept, `400 Bad Request` when the request is
@@ -101,8 +119,10 @@ missing its content or the content is invalid.
 
 With `render_errors => true`, a body that fails validation gets a `400` with
 `content-type: application/json` and a JSON object. `errors` holds one object
-per error, up to `max_errors` (default 20). `truncated` is `true` when more
-errors were found than are listed:
+per error, up to `max_errors` (default 1). Validation stops once it reaches
+that many errors, so `truncated` is `true` when `errors` is at the cap and the
+body may have more errors than are listed. This example used
+`max_errors => 20`:
 
 ```json
 {
@@ -114,14 +134,21 @@ errors were found than are listed:
 }
 ```
 
+With the default `max_errors` of 1 the same body lists only the first error,
+with `"truncated": true`.
+
 | Key | Always | Meaning |
 | --- | --- | --- |
 | `error_context` | yes | always `"schema_violation"` |
 | `error_type` | yes | the jesse error, for example `wrong_type`, `missing_required_property`, `no_extra_properties_allowed`, `not_in_enum`, `wrong_length`, `not_in_range` |
-| `pointer` | yes | JSON Pointer (RFC 6901) to the value that failed; `""` is the whole body |
+| `pointer` | yes | JSON Pointer (RFC 6901) to the value that failed; `""` is the whole body. At most 256 bytes: a longer path is cut at a whole segment, so it points to an ancestor of the value |
 | `property` | no | the missing property, for `missing_required_property` and `missing_dependency` |
 
 The body never contains the schema, its `$id` or a server path.
+
+An integer in the body too large for jesse to divide by `multipleOf` (or
+draft-03 `divisibleBy`) fails validation with `error_type`
+`not_multiple_of` and `pointer` `""`.
 
 Without `render_errors` (the default) the `400` has no body, and jesse stops at
 the first error.
@@ -133,7 +160,7 @@ Plugin options, in the plugin's options map:
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `render_errors` | `false` | send the error body described above |
-| `max_errors` | `20` | most errors listed in the error body, a positive integer |
+| `max_errors` | `1` | most errors listed in the error body, a positive integer |
 
 Route options, in `extra_state`:
 
@@ -151,12 +178,19 @@ Route options, in `extra_state`:
 }}
 ```
 
-The plugin sets jesse's `allowed_errors` from `max_errors`, so validation
-stops once it has found more errors than it will list. A route can set
-`{allowed_errors, infinity}` in `jesse_options` to collect and list every
-error, which for a large body can make the response much larger than the
-request. `{allowed_errors, 0}` stops at the first error. See the jesse
+The plugin sets jesse's `allowed_errors` to `max_errors - 1`, so validation
+stops at the error it would list last. A route's own `allowed_errors` in
+`jesse_options` can only lower that: `{allowed_errors, 0}` stops at the first
+error, and a higher value or `infinity` is ignored. With the default
+`max_errors` of 1, `allowed_errors` is already 0, so a route value changes
+nothing. Without `render_errors`, `allowed_errors` is always 0. See the jesse
 documentation for the other options.
+
+A `max_errors` above 1 makes jesse keep validating after the first error.
+With jesse 1.8.x that has a cost: `uniqueItems` compares every pair of items,
+so on a large array it is quadratic in the array length, and a `maxItems`
+error no longer stops validation before it runs. Keep the default, or bound
+the request body size, on routes whose schema uses `uniqueItems`.
 
 ## License
 
