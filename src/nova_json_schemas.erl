@@ -175,19 +175,27 @@ reject_undecoded_body(SchemaKey, #{method := Method} = Req, State) ->
             {ok, Req, State}
     end.
 
-%% A type that every nova_request_plugin in the supported range decodes:
-%% 0.18 matches the lowercase application/json prefix, later versions parse
-%% the header and need exactly application/json. Any other type is a 415
-%% here and not a misdiagnosed plugin order.
-is_decoded_content_type(#{headers := #{~"content-type" := <<"application/json", _/binary>>}} = Req) ->
-    try cowboy_req:parse_header(~"content-type", Req) of
-        {~"application", ~"json", _Params} -> true;
-        _ -> false
-    catch
-        _:_ -> false
-    end;
-is_decoded_content_type(_Req) ->
+%% Mirrors the decode_json_body rule of nova_request_plugin (not exported):
+%% application/json or any application/*+json type (RFC 6839), compared
+%% case-insensitively with parameters ignored. Any other type is a 415 here
+%% and not a misdiagnosed plugin order.
+is_decoded_content_type(Req) ->
+    is_json(content_type(Req)).
+
+is_json({~"application", ~"json"}) ->
+    true;
+is_json({~"application", SubType}) when byte_size(SubType) > 5 ->
+    binary:part(SubType, byte_size(SubType), -5) =:= ~"+json";
+is_json(_) ->
     false.
+
+content_type(Req) ->
+    try cowboy_req:parse_header(~"content-type", Req) of
+        {Type, SubType, _Params} -> {Type, SubType};
+        _ -> undefined
+    catch
+        _:_ -> undefined
+    end.
 
 unsupported_media_type_headers(#{method := ~"PATCH"}) ->
     #{~"accept" => ~"application/json", ~"accept-patch" => ~"application/json"};

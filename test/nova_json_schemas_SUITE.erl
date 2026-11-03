@@ -27,7 +27,7 @@
     errors_stop_at_the_first_by_default/1,
     route_allowed_errors_raises_the_count/1,
     route_allowed_errors_is_ignored_without_render_errors/1,
-    mixed_case_json_type_is_415/1,
+    mixed_case_json_type_is_validated/1,
     patch_415_sends_accept_patch/1,
     binary_schema_key_is_validated/1,
     schema_without_draft_does_not_warn/1,
@@ -38,7 +38,8 @@
     huge_integer_is_400_under_draft6/1,
     huge_integer_is_400_under_draft4/1,
     other_methods_with_undecoded_json_body_are_500/1,
-    only_exact_json_type_counts_as_undecoded/1,
+    structured_json_types_are_validated/1,
+    only_json_types_count_as_undecoded/1,
     schema_path_outside_priv_is_500/1
 ]).
 
@@ -68,7 +69,7 @@ all() ->
         errors_stop_at_the_first_by_default,
         route_allowed_errors_raises_the_count,
         route_allowed_errors_is_ignored_without_render_errors,
-        mixed_case_json_type_is_415,
+        mixed_case_json_type_is_validated,
         patch_415_sends_accept_patch,
         binary_schema_key_is_validated,
         schema_without_draft_does_not_warn,
@@ -79,7 +80,8 @@ all() ->
         huge_integer_is_400_under_draft6,
         huge_integer_is_400_under_draft4,
         other_methods_with_undecoded_json_body_are_500,
-        only_exact_json_type_counts_as_undecoded,
+        structured_json_types_are_validated,
+        only_json_types_count_as_undecoded,
         schema_path_outside_priv_is_500
     ].
 
@@ -323,11 +325,27 @@ route_allowed_errors_is_ignored_without_render_errors(_Config) ->
     {Millis, {400, _, <<>>}} = timed_post("/plain/unique_all_errors", huge_duplicate_ids()),
     ?assert(Millis < 2000, Millis).
 
-mixed_case_json_type_is_415(_Config) ->
+mixed_case_json_type_is_validated(_Config) ->
     ets:delete_all_objects(?LOG_TABLE),
-    {Status, _, _} = request(post, "/tags", [{"content-type", "Application/JSON"}], ~"{}"),
-    ?assert(lists:member(Status, [415, 400]), Status),
+    {400, _, Body} = request(post, "/tags", [{"content-type", "Application/JSON"}], ~"{}"),
+    ?assertMatch([_ | _], decode_errors(Body)),
     ?assertEqual([], logged(error, ~"JSON body was not decoded")).
+
+structured_json_types_are_validated(_Config) ->
+    Valid = iolist_to_binary(json:encode(#{~"name" => ~"erlang", ~"slug" => ~"erlang"})),
+    [
+        begin
+            {400, _, Body} = request(Method, "/tags", [{"content-type", Type}], ~"{\"name\":5}"),
+            ?assertMatch([#{~"error_context" := ~"schema_violation"}], decode_errors(Body)),
+            {200, _, _} = request(Method, "/tags", [{"content-type", Type}], Valid)
+        end
+     || {Method, Type} <- [
+            {post, "application/vnd.api+json"},
+            {post, "application/VND.API+JSON; charset=utf-8"},
+            {patch, "application/merge-patch+json"}
+        ]
+    ],
+    {415, _, _} = request(post, "/tags", [{"content-type", "application/json-seq"}], Valid).
 
 patch_415_sends_accept_patch(_Config) ->
     {415, Headers, _} = request(patch, "/tags", [{"content-type", "text/plain"}], ~"{}"),
@@ -442,23 +460,30 @@ other_methods_with_undecoded_json_body_are_500(_Config) ->
     {200, _, _} = request(get, "/unordered/any", [{"content-type", "application/json"}], ~"{}"),
     {400, _, _} = request(options, "/any", [{"content-type", "application/json"}], ~"{}").
 
-only_exact_json_type_counts_as_undecoded(_Config) ->
+only_json_types_count_as_undecoded(_Config) ->
     ets:delete_all_objects(?LOG_TABLE),
     {415, _, _} = request(
         post, "/unordered/tags", [{"content-type", "application/json-seq"}], ~"{}"
     ),
-    {415, _, _} = request(
-        patch, "/unordered/tags", [{"content-type", "application/json-patch+json"}], ~"[]"
-    ),
     {415, _, _} = request(post, "/unordered/tags", [{"content-type", "application/json;"}], ~"{}"),
+    {415, _, _} = request(post, "/unordered/tags", [{"content-type", "text/json"}], ~"{}"),
     {200, _, _} = request(
         options, "/unordered/any", [{"content-type", "application/json-seq"}], ~"{}"
     ),
     ?assertEqual([], logged(error, ~"JSON body was not decoded")),
-    {500, _, _} = request(
-        post, "/unordered/tags", [{"content-type", "application/json; charset=utf-8"}], ~"{}"
-    ),
-    ?assertMatch([_], logged(error, ~"JSON body was not decoded")).
+    [
+        begin
+            ets:delete_all_objects(?LOG_TABLE),
+            {500, _, _} = request(post, "/unordered/tags", [{"content-type", Type}], ~"{}"),
+            ?assertMatch([_], logged(error, ~"JSON body was not decoded"))
+        end
+     || Type <- [
+            "application/json; charset=utf-8",
+            "Application/JSON",
+            "application/vnd.api+json",
+            "application/json-patch+json"
+        ]
+    ].
 
 schema_path_outside_priv_is_500(_Config) ->
     [
