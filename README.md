@@ -193,6 +193,14 @@ so on a large array it is quadratic in the array length, and a `maxItems`
 error no longer stops validation before it runs. Keep the default, or bound
 the request body size, on routes whose schema uses `uniqueItems`.
 
+## Regular expressions
+
+jesse runs `pattern` and `patternProperties` with OTP's `re`. A pathological
+regex that hits `re`'s match limit is treated as no match. For `pattern` that
+fails closed: the value is rejected. For `patternProperties` a property that
+should have matched is then not checked against that sub-schema, which fails
+closed only if the schema also sets `additionalProperties: false`.
+
 ## License
 
 Apache License 2.0, see [LICENSE](LICENSE).
