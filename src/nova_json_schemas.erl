@@ -108,10 +108,17 @@ plugin_info() ->
     }.
 
 version() ->
-    case application:get_key(nova_json_schemas, vsn) of
-        {ok, Vsn} -> iolist_to_binary(io_lib:format("~ts", [Vsn]));
+    case app_vsn() of
+        {ok, Vsn} when is_list(Vsn) -> vsn_binary(unicode:characters_to_binary(Vsn));
         _ -> ~"unknown"
     end.
+
+-spec app_vsn() -> {ok, dynamic()} | undefined.
+app_vsn() ->
+    application:get_key(nova_json_schemas, vsn).
+
+vsn_binary(Vsn) when is_binary(Vsn) -> Vsn;
+vsn_binary(_Invalid) -> ~"unknown".
 
 schema_key(SchemaLocation) when is_binary(SchemaLocation) ->
     binary_to_list(SchemaLocation);
