@@ -24,14 +24,17 @@ init() ->
 %%--------------------------------------------------------------------
 -spec load_local_schemas() -> ok.
 load_local_schemas() ->
-    {ok, MainApp} = nova:get_main_app(),
-    PrivDir = code:priv_dir(MainApp),
-    SchemasDir = filename:join([PrivDir, "schemas"]),
-    case filelib:is_dir(SchemasDir) of
-        true ->
-            load_schemas_from_dir(SchemasDir, "schemas");
-        false ->
-            ?LOG_WARNING("Schemas directory not found: ~s", [SchemasDir])
+    case main_priv_dir() of
+        {ok, PrivDir} ->
+            SchemasDir = filename:join(PrivDir, "schemas"),
+            case filelib:is_dir(SchemasDir) of
+                true ->
+                    load_schemas_from_dir(SchemasDir, "schemas");
+                false ->
+                    ?LOG_WARNING("Schemas directory not found: ~s", [SchemasDir])
+            end;
+        {error, Reason} ->
+            ?LOG_WARNING("Schemas directory not found: ~p", [Reason])
     end,
     ok.
 
@@ -124,9 +127,8 @@ validate_json(SchemaLocation, Json, JesseOpts) ->
     case jesse:validate(SchemaLocation, Json, JesseOpts) of
         {error, {database_error, _, schema_not_found}} ->
             %% Load the schema
-            {ok, MainApp} = nova:get_main_app(),
-            PrivDir = code:priv_dir(MainApp),
-            SchemaLocation0 = filename:join([PrivDir, SchemaLocation]),
+            {ok, PrivDir} = main_priv_dir(),
+            SchemaLocation0 = filename:join(PrivDir, SchemaLocation),
             {ok, Filecontent} = file:read_file(SchemaLocation0),
             Schema = json:decode(Filecontent),
             jesse:add_schema(SchemaLocation, Schema),
@@ -135,6 +137,13 @@ validate_json(SchemaLocation, Json, JesseOpts) ->
             {error, ValidationError};
         {ok, _} ->
             ok
+    end.
+
+main_priv_dir() ->
+    {ok, MainApp} = nova:get_main_app(),
+    case code:priv_dir(MainApp) of
+        {error, bad_name} -> {error, {no_priv_dir, MainApp}};
+        PrivDir -> {ok, PrivDir}
     end.
 
 render_error([]) ->
@@ -166,26 +175,19 @@ to_json_safe(V) ->
 load_schemas_from_dir(Dir, RelativePrefix) ->
     case file:list_dir(Dir) of
         {ok, Files} ->
-            lists:foreach(
-                fun(File) ->
-                    FilePath = filename:join([Dir, File]),
-                    RelativePath = filename:join([RelativePrefix, File]),
-                    case filelib:is_dir(FilePath) of
-                        true ->
-                            load_schemas_from_dir(FilePath, RelativePath);
-                        false ->
-                            case filename:extension(File) of
-                                ".json" ->
-                                    load_schema_file(FilePath, RelativePath);
-                                _ ->
-                                    ok
-                            end
-                    end
-                end,
-                Files
-            );
+            _ = [load_dir_entry(Dir, RelativePrefix, File) || File <- Files],
+            ok;
         {error, Reason} ->
             ?LOG_ERROR("Failed to list directory ~s: ~p", [Dir, Reason])
+    end.
+
+load_dir_entry(Dir, RelativePrefix, File) ->
+    FilePath = filename:join(Dir, File),
+    RelativePath = filename:join(RelativePrefix, File),
+    case {filelib:is_dir(FilePath), filename:extension(File)} of
+        {true, _} -> load_schemas_from_dir(FilePath, RelativePath);
+        {false, ".json"} -> load_schema_file(FilePath, RelativePath);
+        {false, _} -> ok
     end.
 
 load_schema_file(FilePath, RelativePath) ->
