@@ -9,7 +9,7 @@ First include `nova_json_schemas` in your `rebar.config` file:
 ```erlang
 
 {deps, [
-        {nova_json_schemas, {git, "https://github.com/novaframework/nova_json_schemas.git", {branch, "master"}}}
+        {nova_json_schemas, "~> 0.3"}
 	]}.
 ```
 
