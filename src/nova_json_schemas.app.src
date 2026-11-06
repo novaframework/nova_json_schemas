@@ -1,5 +1,5 @@
 {application, nova_json_schemas, [
-    {description, "Validating JSON with schemas"},
+    {description, "JSON Schema request validation plugin for the Nova web framework"},
     {vsn, "git"},
     {registered, []},
     {applications, [
