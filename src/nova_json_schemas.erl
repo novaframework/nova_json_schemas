@@ -1,4 +1,11 @@
 -module(nova_json_schemas).
+-moduledoc """
+Nova plugin that validates JSON request bodies against JSON schemas with
+[jesse](https://github.com/for-GET/jesse).
+
+A route opts in with `extra_state => #{json_schema => "schemas/thing.json"}`.
+See the README for the plugin order, the response codes and the error body.
+""".
 -behaviour(nova_plugin).
 
 -export([
@@ -11,94 +18,72 @@
 
 -include_lib("kernel/include/logger.hrl").
 
+-define(BODY_METHODS, [~"POST", ~"PUT", ~"PATCH"]).
+-define(UNDECODED_METHODS, [~"GET", ~"DELETE"]).
+-define(MAX_POINTER_BYTES, 256).
+
 init() ->
     jesse_database:load_all(),
     load_local_schemas(),
     #{}.
 
-%%--------------------------------------------------------------------
-%% @doc
-%% Load all local JSON schemas from the main application's
-%% priv/schemas directory
-%% @end
-%%--------------------------------------------------------------------
+-doc """
+Load every `*.json` file under the main application's `priv/schemas`
+directory into jesse, keyed by its path relative to `priv`
+(for example `"schemas/user.json"`).
+""".
 -spec load_local_schemas() -> ok.
 load_local_schemas() ->
-    {ok, MainApp} = nova:get_main_app(),
-    PrivDir = code:priv_dir(MainApp),
-    SchemasDir = filename:join([PrivDir, "schemas"]),
-    case filelib:is_dir(SchemasDir) of
-        true ->
-            load_schemas_from_dir(SchemasDir, "schemas");
-        false ->
-            ?LOG_WARNING("Schemas directory not found: ~s", [SchemasDir])
+    case main_priv_dir() of
+        {ok, PrivDir} ->
+            SchemasDir = filename:join(PrivDir, "schemas"),
+            case filelib:is_dir(SchemasDir) of
+                true ->
+                    load_schemas_from_dir(SchemasDir, "schemas");
+                false ->
+                    ?LOG_WARNING(#{msg => ~"Schemas directory not found", dir => SchemasDir})
+            end;
+        {error, Reason} ->
+            ?LOG_WARNING(#{msg => ~"Schemas directory not found", reason => Reason})
     end,
     ok.
 
-%%--------------------------------------------------------------------
-%% @doc
-%% Pre-request callback
-%% @end
-%%--------------------------------------------------------------------
+-doc """
+Validate the decoded JSON body of a route against the request-body schema
+named by `json_schema` in its `extra_state`.
+
+POST, PUT and PATCH requests must carry a decoded JSON body. Requests with
+other methods are validated only when a decoded body is present. A JSON body
+that `nova_request_plugin` would have decoded but did not is a `500`.
+""".
 -spec pre_request(Req :: cowboy_req:req(), Env :: any(), Options :: map(), State :: any()) ->
     {ok, Req0 :: cowboy_req:req(), NewState :: any()}
-    | {stop, Req0 :: cowboy_req:req(), NewState :: any()}
-    | {error, Reason :: term()}.
+    | {stop, Req0 :: cowboy_req:req(), NewState :: any()}.
 pre_request(
-    Req = #{extra_state := #{json_schema := SchemaLocation} = Extra, json := JSON},
+    #{extra_state := #{json_schema := SchemaLocation} = Extra, json := JSON} = Req,
     _Env,
     Options,
     State
 ) ->
-    JesseOpts = maps:get(jesse_options, Extra, []),
-    case validate_json(SchemaLocation, JSON, JesseOpts) of
-        ok ->
-            ?LOG_DEBUG("Schema validation on JSON body successful"),
-            {ok, Req, State};
-        {error, Errors} ->
-            ?LOG_DEBUG("Got validation-errors on JSON body. Errors: ~p", [Errors]),
-            case maps:get(render_errors, Options, false) of
-                true ->
-                    ?LOG_DEBUG("Rendering validation-errors and send back to requester"),
-                    Req0 = cowboy_req:set_resp_headers(
-                        #{<<"content-type">> => <<"application/json">>}, Req
-                    ),
-                    ErrorStruct = render_error(Errors),
-                    ErrorJson = json:encode(ErrorStruct),
-                    Req1 = cowboy_req:set_resp_body(ErrorJson, Req0),
-                    Req2 = cowboy_req:reply(400, Req1),
-                    {stop, Req2, State};
-                _ ->
-                    ?LOG_DEBUG(
-                        "render_errors-option not set for plugin nova_json_schemas - returning plain 400-status to requester"
-                    ),
-                    Req0 = cowboy_req:reply(400, Req),
-                    {stop, Req0, State}
-            end
+    validate_request(schema_key(SchemaLocation), JSON, Extra, Options, Req, State);
+pre_request(
+    #{extra_state := #{json_schema := SchemaLocation}, method := Method} = Req,
+    _Env,
+    _Options,
+    State
+) ->
+    case lists:member(Method, ?UNDECODED_METHODS) of
+        true -> {ok, Req, State};
+        false -> reject_undecoded_body(schema_key(SchemaLocation), Req, State)
     end;
-pre_request(#{extra_state := #{json_schema := _SchemaLocation}}, _Env, _Options, _State) ->
-    ?LOG_ERROR(
-        "JSON Schema is set in 'extra_state' but body have not yet been parsed - rearrange your plugins so that JSON plugin is ran before this.."
-    ),
-    {error, body_not_parsed};
 pre_request(Req, _Env, _Options, State) ->
     {ok, Req, State}.
 
-%%--------------------------------------------------------------------
-%% @doc
-%% Post-request callback
-%% @end
-%%--------------------------------------------------------------------
 -spec post_request(Req :: cowboy_req:req(), Env :: any(), Options :: map(), State :: any()) ->
     {ok, Req0 :: cowboy_req:req(), NewState :: any()}.
 post_request(Req, _Env, _Options, State) ->
     {ok, Req, State}.
 
-%%--------------------------------------------------------------------
-%% @doc
-%% nova_plugin callback. Returns information about the plugin.
-%% @end
-%%--------------------------------------------------------------------
 -spec plugin_info() ->
     #{
         title := binary(),
@@ -110,95 +95,287 @@ post_request(Req, _Env, _Options, State) ->
     }.
 plugin_info() ->
     #{
-        title => <<"Nova JSON Schema plugin">>,
-        version => <<"0.2.0">>,
-        url => <<"https://github.com/novaframework/nova_json_schemas">>,
-        authors => [<<"Niclas Axelsson <niclas@burbas.se>">>],
-        description => <<"Validates JSON request bodies against JSON schemas using jesse">>,
+        title => ~"Nova JSON Schema plugin",
+        version => version(),
+        url => ~"https://github.com/novaframework/nova_json_schemas",
+        authors => [~"Niclas Axelsson <niclas@burbas.se>"],
+        description => ~"Validates JSON request bodies against JSON schemas using jesse",
         options => [
-            {render_errors, <<"If true, validation errors are returned as JSON to the requester">>}
+            {render_errors, ~"If true, validation errors are returned as JSON to the requester"}
         ]
     }.
 
-validate_json(SchemaLocation, Json, JesseOpts) ->
-    case jesse:validate(SchemaLocation, Json, JesseOpts) of
+version() ->
+    case app_vsn() of
+        {ok, Vsn} when is_list(Vsn) -> vsn_binary(unicode:characters_to_binary(Vsn));
+        _ -> ~"unknown"
+    end.
+
+-spec app_vsn() -> {ok, dynamic()} | undefined.
+app_vsn() ->
+    application:get_key(nova_json_schemas, vsn).
+
+vsn_binary(Vsn) when is_binary(Vsn) -> Vsn;
+vsn_binary(_Invalid) -> ~"unknown".
+
+schema_key(SchemaLocation) when is_binary(SchemaLocation) ->
+    binary_to_list(SchemaLocation);
+schema_key(SchemaLocation) ->
+    SchemaLocation.
+
+validate_request(SchemaKey, JSON, Extra, Options, Req, State) ->
+    RenderErrors = maps:get(render_errors, Options, false) =:= true,
+    JesseOpts = jesse_options(RenderErrors, maps:get(jesse_options, Extra, [])),
+    case validate_json(SchemaKey, JSON, JesseOpts) of
+        ok ->
+            {ok, Req, State};
+        {invalid, Errors} ->
+            ?LOG_DEBUG(#{msg => ~"JSON body failed schema validation", schema => SchemaKey}),
+            reply_invalid(Errors, RenderErrors, Req, State);
+        {schema_error, Reason} ->
+            ?LOG_ERROR(#{
+                msg => ~"JSON schema cannot be used for validation",
+                schema => SchemaKey,
+                reason => Reason
+            }),
+            {stop, cowboy_req:reply(500, Req), State}
+    end.
+
+%% A bare 400 needs only the first error, so the route's allowed_errors
+%% applies only when the errors are rendered.
+jesse_options(true, RouteOpts) ->
+    RouteOpts ++ [{schema_loader_fun, fun jesse_database:load/1}];
+jesse_options(false, RouteOpts) ->
+    [{allowed_errors, 0} | proplists:delete(allowed_errors, RouteOpts)] ++
+        [{schema_loader_fun, fun jesse_database:load/1}].
+
+reply_invalid(Errors, true, Req, State) ->
+    Body = json:encode([render_error(Error) || Error <- Errors]),
+    Req0 = cowboy_req:reply(400, #{~"content-type" => ~"application/json"}, Body, Req),
+    {stop, Req0, State};
+reply_invalid(_Errors, false, Req, State) ->
+    {stop, cowboy_req:reply(400, Req), State}.
+
+reject_undecoded_body(SchemaKey, #{method := Method} = Req, State) ->
+    BodyRequired = lists:member(Method, ?BODY_METHODS),
+    case {cowboy_req:has_body(Req), is_decoded_content_type(Req)} of
+        {true, true} ->
+            ?LOG_ERROR(#{
+                msg =>
+                    ~"JSON body was not decoded before nova_json_schemas ran. Put {pre_request, nova_request_plugin, #{decode_json_body => true}} before nova_json_schemas in the plugin list",
+                schema => SchemaKey
+            }),
+            {stop, cowboy_req:reply(500, Req), State};
+        {false, _} when BodyRequired ->
+            {stop, cowboy_req:reply(400, Req), State};
+        {true, false} when BodyRequired ->
+            Req0 = cowboy_req:reply(415, unsupported_media_type_headers(Req), Req),
+            {stop, Req0, State};
+        _ ->
+            {ok, Req, State}
+    end.
+
+%% Mirrors the decode_json_body rule of nova_request_plugin (not exported):
+%% application/json or any application/*+json type (RFC 6839), compared
+%% case-insensitively with parameters ignored. Any other type is a 415 here
+%% and not a misdiagnosed plugin order.
+is_decoded_content_type(Req) ->
+    is_json(content_type(Req)).
+
+is_json({~"application", ~"json"}) ->
+    true;
+is_json({~"application", SubType}) when byte_size(SubType) > 5 ->
+    binary:part(SubType, byte_size(SubType), -5) =:= ~"+json";
+is_json(_) ->
+    false.
+
+content_type(Req) ->
+    try cowboy_req:parse_header(~"content-type", Req) of
+        {Type, SubType, _Params} -> {Type, SubType};
+        _ -> undefined
+    catch
+        _:_ -> undefined
+    end.
+
+unsupported_media_type_headers(#{method := ~"PATCH"}) ->
+    #{~"accept" => ~"application/json", ~"accept-patch" => ~"application/json"};
+unsupported_media_type_headers(_Req) ->
+    #{~"accept" => ~"application/json"}.
+
+validate_json(SchemaLocation, JSON, JesseOpts) ->
+    case jesse_validate(SchemaLocation, JSON, JesseOpts) of
         {error, {database_error, _, schema_not_found}} ->
-            %% Load the schema
-            {ok, MainApp} = nova:get_main_app(),
-            PrivDir = code:priv_dir(MainApp),
-            SchemaLocation0 = filename:join([PrivDir, SchemaLocation]),
-            {ok, Filecontent} = file:read_file(SchemaLocation0),
-            Schema = json:decode(Filecontent),
-            jesse:add_schema(SchemaLocation, Schema),
-            validate_json(SchemaLocation, Json, JesseOpts);
-        {error, ValidationError} ->
-            {error, ValidationError};
-        {ok, _} ->
+            case load_schema_on_demand(SchemaLocation) of
+                ok ->
+                    classify(jesse_validate(SchemaLocation, JSON, JesseOpts));
+                {error, Reason} ->
+                    {schema_error, Reason}
+            end;
+        Result ->
+            classify(Result)
+    end.
+
+%% jesse 1.8 divides the instance by multipleOf as floats, so a huge integer
+%% in the body raises badarith under drafts 3 and 4.
+jesse_validate(SchemaLocation, JSON, JesseOpts) ->
+    try
+        jesse:validate(SchemaLocation, JSON, JesseOpts)
+    catch
+        error:badarith -> {error, [number_overflow(#{})]}
+    end.
+
+number_overflow(Schema) ->
+    {data_invalid, Schema, not_multiple_of, null, []}.
+
+classify({ok, _}) ->
+    ok;
+classify({error, Errors}) when is_list(Errors) ->
+    case lists:partition(fun is_data_invalid/1, [overflow_as_data(Error) || Error <- Errors]) of
+        {DataErrors, []} ->
+            {invalid, DataErrors};
+        {_, SchemaErrors} ->
+            {schema_error, [strip_schema(Error) || Error <- SchemaErrors]}
+    end;
+classify({error, Reason}) ->
+    {schema_error, Reason}.
+
+%% Under draft 6 the same overflow is reported as a broken schema, although
+%% the schema's multipleOf is valid.
+overflow_as_data({schema_invalid, #{~"multipleOf" := MultipleOf} = Schema, wrong_multiple_of}) when
+    is_number(MultipleOf), MultipleOf > 0
+->
+    number_overflow(Schema);
+overflow_as_data(Error) ->
+    Error.
+
+is_data_invalid({data_invalid, _Schema, _Info, _Value, _Path}) -> true;
+is_data_invalid(_) -> false.
+
+strip_schema({schema_invalid, _Schema, Info}) -> {schema_invalid, Info};
+strip_schema(Error) -> Error.
+
+load_schema_on_demand(SchemaLocation) ->
+    maybe
+        {ok, PrivDir} ?= main_priv_dir(),
+        {ok, RelativePath} ?= confine_to_priv(SchemaLocation, PrivDir),
+        FilePath = filename:join(PrivDir, RelativePath),
+        {ok, FileContent} ?=
+            case file:read_file(FilePath) of
+                {error, Reason} -> {error, {schema_file, FilePath, Reason}};
+                Read -> Read
+            end,
+        add_schema(SchemaLocation, FileContent)
+    end.
+
+confine_to_priv(SchemaLocation, PrivDir) ->
+    case filelib:safe_relative_path(SchemaLocation, PrivDir) of
+        unsafe -> {error, {schema_path_outside_priv, SchemaLocation}};
+        RelativePath -> {ok, RelativePath}
+    end.
+
+main_priv_dir() ->
+    {ok, MainApp} = nova:get_main_app(),
+    case code:priv_dir(MainApp) of
+        {error, bad_name} -> {error, {no_priv_dir, MainApp}};
+        PrivDir -> {ok, PrivDir}
+    end.
+
+add_schema(Key, FileContent) ->
+    try json:decode(FileContent) of
+        Schema when is_map(Schema) ->
+            warn_if_unsupported_draft(Key, Schema),
+            jesse:add_schema(Key, Schema);
+        _ ->
+            {error, schema_not_an_object}
+    catch
+        error:Reason ->
+            {error, {json_decode, Reason}}
+    end.
+
+warn_if_unsupported_draft(Key, Schema) ->
+    case jesse:validate_with_schema(maps:with([~"$schema"], Schema), null) of
+        {error, [{schema_invalid, _, {schema_unsupported, Draft}}]} ->
+            ?LOG_WARNING(#{
+                msg =>
+                    ~"JSON schema declares a $schema that jesse cannot validate; requests on routes using it get a 500",
+                schema => Key,
+                '$schema' => Draft
+            });
+        _ ->
             ok
     end.
 
-render_error([]) ->
-    [];
-render_error([{data_invalid, FieldInfo, Type, ActualValue, Field} | Tl]) ->
-    [
+render_error({data_invalid, _Schema, Info, Value, Path}) ->
+    maps:merge(
         #{
             error_context => schema_violation,
-            field_info => to_json_safe(FieldInfo),
-            error_type => to_json_safe(Type),
-            actual_value => to_json_safe(ActualValue),
-            expected_value => to_json_safe(Field)
-        }
-        | render_error(Tl)
-    ].
+            error_type => error_type(Info),
+            path => json_pointer(Path)
+        },
+        error_detail(Info, Value)
+    ).
 
-%% @doc Convert arbitrary Erlang terms to JSON-safe values.
-%% json:encode/1 cannot encode tuples, pids, refs, etc.
--spec to_json_safe(term()) -> term().
-to_json_safe(V) when is_binary(V) -> V;
-to_json_safe(V) when is_atom(V) -> V;
-to_json_safe(V) when is_number(V) -> V;
-to_json_safe(V) when is_list(V) -> [to_json_safe(E) || E <- V];
-to_json_safe(V) when is_map(V) ->
-    maps:fold(fun(K, Val, Acc) -> Acc#{to_json_safe(K) => to_json_safe(Val)} end, #{}, V);
-to_json_safe(V) ->
-    iolist_to_binary(io_lib:format("~tp", [V])).
+error_type(Type) when is_atom(Type) -> Type;
+error_type({Type, _}) when is_atom(Type) -> Type;
+error_type(_) -> data_invalid.
+
+error_detail(missing_required_property, Name) when is_binary(Name) -> #{property => Name};
+error_detail({missing_dependency, Name}, _Value) when is_binary(Name) -> #{property => Name};
+error_detail(_Info, _Value) -> #{}.
+
+%% Whole segments up to ?MAX_POINTER_BYTES, so a long client key gives a
+%% pointer to an ancestor instead of echoing the key.
+json_pointer(Path) ->
+    json_pointer(Path, <<>>).
+
+json_pointer([], Pointer) ->
+    Pointer;
+json_pointer([Segment | Rest], Pointer) ->
+    Next = <<Pointer/binary, $/, (pointer_segment(Segment))/binary>>,
+    case byte_size(Next) > ?MAX_POINTER_BYTES of
+        true -> Pointer;
+        false -> json_pointer(Rest, Next)
+    end.
+
+pointer_segment(Index) when is_integer(Index) ->
+    integer_to_binary(Index);
+pointer_segment(Segment) when is_atom(Segment) ->
+    pointer_segment(atom_to_binary(Segment));
+pointer_segment(Segment) when is_list(Segment) ->
+    pointer_segment(unicode:characters_to_binary(Segment));
+pointer_segment(Segment) when is_binary(Segment) ->
+    Escaped = binary:replace(Segment, ~"~", ~"~0", [global]),
+    binary:replace(Escaped, ~"/", ~"~1", [global]).
 
 load_schemas_from_dir(Dir, RelativePrefix) ->
     case file:list_dir(Dir) of
         {ok, Files} ->
-            lists:foreach(
-                fun(File) ->
-                    FilePath = filename:join([Dir, File]),
-                    RelativePath = filename:join([RelativePrefix, File]),
-                    case filelib:is_dir(FilePath) of
-                        true ->
-                            load_schemas_from_dir(FilePath, RelativePath);
-                        false ->
-                            case filename:extension(File) of
-                                ".json" ->
-                                    load_schema_file(FilePath, RelativePath);
-                                _ ->
-                                    ok
-                            end
-                    end
-                end,
-                Files
-            );
+            _ = [load_dir_entry(Dir, RelativePrefix, File) || File <- Files],
+            ok;
         {error, Reason} ->
-            ?LOG_ERROR("Failed to list directory ~s: ~p", [Dir, Reason])
+            ?LOG_ERROR(#{msg => ~"Failed to list schema directory", dir => Dir, reason => Reason})
+    end.
+
+load_dir_entry(Dir, RelativePrefix, File) ->
+    FilePath = filename:join(Dir, File),
+    RelativePath = filename:join(RelativePrefix, File),
+    case {filelib:is_dir(FilePath), filename:extension(File)} of
+        {true, _} -> load_schemas_from_dir(FilePath, RelativePath);
+        {false, ".json"} -> load_schema_file(FilePath, RelativePath);
+        {false, _} -> ok
     end.
 
 load_schema_file(FilePath, RelativePath) ->
     case file:read_file(FilePath) of
         {ok, FileContent} ->
-            try json:decode(FileContent) of
-                Schema ->
-                    jesse:add_schema(RelativePath, Schema),
-                    ?LOG_DEBUG("Loaded JSON schema: ~s", [RelativePath])
-            catch
-                error:Reason ->
-                    ?LOG_ERROR("Failed to decode JSON schema ~s: ~p", [FilePath, Reason])
+            case add_schema(RelativePath, FileContent) of
+                ok ->
+                    ?LOG_DEBUG(#{msg => ~"Loaded JSON schema", schema => RelativePath});
+                {error, Reason} ->
+                    ?LOG_ERROR(#{
+                        msg => ~"Failed to load JSON schema", file => FilePath, reason => Reason
+                    })
             end;
         {error, Reason} ->
-            ?LOG_ERROR("Failed to read schema file ~s: ~p", [FilePath, Reason])
+            ?LOG_ERROR(#{msg => ~"Failed to read schema file", file => FilePath, reason => Reason})
     end.
