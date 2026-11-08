@@ -20,7 +20,7 @@ Add `nova_json_schemas` to the deps in your `rebar.config`:
 
 ```erlang
 {deps, [
-    nova_json_schemas
+    {nova_json_schemas, "~> 0.3"}
 ]}.
 ```
 
